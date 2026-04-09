@@ -34,8 +34,8 @@ const PERF_LOG_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(
 const PERF_LOG_MS = Math.max(1000, Number(process.env.MONITOR_PERF_LOG_MS ?? "2000"));
 const FRAME_WIDTH = Number(process.env.MONITOR_FRAME_WIDTH ?? "1280");
 const FRAME_HEIGHT = Number(process.env.MONITOR_FRAME_HEIGHT ?? "720");
-const TARGET_FPS = Number(process.env.MONITOR_VIDEO_FPS ?? process.env.MONITOR_CAMERA_FPS ?? "30");
-const FRAME_SEND_CAP_FPS = Number(process.env.MONITOR_FRAME_SEND_CAP_FPS ?? "0");
+/** Fixed pipeline rate: capture, upstream JPEGs, and receiver MP4 recording. */
+const VIDEO_FPS = 30;
 const JPEG_QUALITY = Math.min(100, Math.max(1, Number(process.env.MONITOR_JPEG_QUALITY ?? "75")));
 const MAX_UPSTREAM_BUFFER_BYTES = Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "262144");
 const FFMPEG_PATH = process.env.MONITOR_FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
@@ -322,8 +322,6 @@ const JPEG_SOI = Buffer.from([0xff, 0xd8]);
 const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 let ffmpegProc = null;
 let mjpegBuffer = Buffer.alloc(0);
-let lastFrameSentAt = 0;
-const FRAME_SEND_MS = FRAME_SEND_CAP_FPS > 0 ? Math.max(1, Math.round(1000 / Math.max(1, FRAME_SEND_CAP_FPS))) : 0;
 let lastUpstreamDropLogAt = 0;
 let ffmpegAudioProc = null;
 
@@ -406,7 +404,6 @@ const perf = {
   frameDecoded: 0,
   frameSent: 0,
   frameDropped: 0,
-  frameSkippedByCap: 0,
   frameBytesSent: 0,
   audioChunkSent: 0,
   audioBytes: 0,
@@ -426,7 +423,7 @@ function startFfmpeg() {
     "-f",
     "v4l2",
     "-framerate",
-    String(TARGET_FPS),
+    String(VIDEO_FPS),
     "-video_size",
     `${FRAME_WIDTH}x${FRAME_HEIGHT}`,
     "-i",
@@ -545,10 +542,6 @@ function onMjpegChunk(chunk) {
     mjpegBuffer = mjpegBuffer.subarray(end + 2);
     perf.frameDecoded += 1;
     const now = Date.now();
-    if (FRAME_SEND_MS > 0 && now - lastFrameSentAt < FRAME_SEND_MS) {
-      perf.frameSkippedByCap += 1;
-      continue;
-    }
     const ws = upstreamWs;
     if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_UPSTREAM_BUFFER_BYTES) {
       perf.frameDropped += 1;
@@ -559,7 +552,6 @@ function onMjpegChunk(chunk) {
       }
       continue;
     }
-    lastFrameSentAt = now;
     perf.frameSent += 1;
     perf.frameBytesSent += frame.length;
     sendUpstreamFrame(frame);
@@ -599,7 +591,6 @@ function connectUpstreamLoop() {
       encoderId: ENCODER_ID,
       meta: {
         videoDevice: VIDEO_DEVICE,
-        cameraFps: TARGET_FPS,
         gpsPath: GPS_PATH,
         gpsBaud: GPS_BAUD,
         audioSampleRate: AUDIO_SAMPLE_RATE,
@@ -742,7 +733,7 @@ function shutdown() {
 }
 
 console.log(`Encoder starting (id: ${ENCODER_ID})`);
-console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${TARGET_FPS}`);
+console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${VIDEO_FPS}fps (fixed)`);
 if (AUDIO_ENABLED) {
   console.log(`Audio: ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz PCM (trying ${audioDeviceCandidates.length} ALSA devices)`);
   console.log(`  first: ${audioDeviceCandidates.slice(0, 6).join(", ")}${audioDeviceCandidates.length > 6 ? "…" : ""}`);
@@ -795,7 +786,7 @@ if (PERF_LOG_ENABLED) {
     const aKbps = ((perf.audioBytes * 8) / 1000) / elapsedSec;
     console.log(
       `[PERF] inFPS=${fmtRatePerSec(perf.frameDecoded, elapsedSec)} outFPS=${fmtRatePerSec(perf.frameSent, elapsedSec)} ` +
-      `dropFPS=${fmtRatePerSec(perf.frameDropped, elapsedSec)} capSkipFPS=${fmtRatePerSec(perf.frameSkippedByCap, elapsedSec)} ` +
+      `dropFPS=${fmtRatePerSec(perf.frameDropped, elapsedSec)} ` +
       `vKbps=${vKbps.toFixed(0)} aKbps=${aKbps.toFixed(0)} ` +
       `gps/s=${fmtRatePerSec(perf.gpsSent, elapsedSec)} wsQ=${wsQueue}B ` +
       `cpu1=${cpuPctSingleCore.toFixed(1)}% cpuAll=${cpuPctAllCores.toFixed(1)}% load1=${load1.toFixed(2)} rss=${rssMb.toFixed(0)}MB`,
@@ -803,7 +794,6 @@ if (PERF_LOG_ENABLED) {
     perf.frameDecoded = 0;
     perf.frameSent = 0;
     perf.frameDropped = 0;
-    perf.frameSkippedByCap = 0;
     perf.frameBytesSent = 0;
     perf.audioChunkSent = 0;
     perf.audioBytes = 0;
