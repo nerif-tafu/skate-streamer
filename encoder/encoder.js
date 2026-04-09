@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 
 import { ReadlineParser } from "@serialport/parser-readline";
 import ffmpegStatic from "ffmpeg-static";
@@ -26,10 +27,14 @@ const AUDIO_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(AUD
 const AUDIO_SAMPLE_RATE = Number(process.env.MONITOR_AUDIO_SAMPLE_RATE ?? "44100");
 const AUDIO_CHANNELS = Number(process.env.MONITOR_AUDIO_CHANNELS ?? "1");
 const AUDIO_BITRATE = process.env.MONITOR_AUDIO_BITRATE ?? "96k";
+const PERF_LOG_ENABLED_RAW = (process.env.MONITOR_PERF_LOG ?? "true").toLowerCase();
+const PERF_LOG_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(PERF_LOG_ENABLED_RAW);
+const PERF_LOG_MS = Math.max(1000, Number(process.env.MONITOR_PERF_LOG_MS ?? "2000"));
 const FRAME_WIDTH = Number(process.env.MONITOR_FRAME_WIDTH ?? "1280");
 const FRAME_HEIGHT = Number(process.env.MONITOR_FRAME_HEIGHT ?? "720");
 const TARGET_FPS = Number(process.env.MONITOR_CAMERA_FPS ?? "15");
 const JPEG_QUALITY = Math.min(100, Math.max(1, Number(process.env.MONITOR_JPEG_QUALITY ?? "75")));
+const MAX_UPSTREAM_BUFFER_BYTES = Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "262144");
 const FFMPEG_PATH = process.env.MONITOR_FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 
 const RECEIVER_WS_URL = process.env.MONITOR_RECEIVER_WS_URL ?? "ws://127.0.0.1:9090/ingest";
@@ -315,7 +320,8 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 let ffmpegProc = null;
 let mjpegBuffer = Buffer.alloc(0);
 let lastFrameSentAt = 0;
-const FRAME_SEND_MS = Math.max(40, Math.round(1000 / Math.max(1, TARGET_FPS)));
+const FRAME_SEND_MS = Math.max(1, Math.round(1000 / Math.max(1, TARGET_FPS)));
+let lastUpstreamDropLogAt = 0;
 let ffmpegAudioProc = null;
 const audioDeviceCandidates = (() => {
   const explicit = (process.env.MONITOR_AUDIO_DEVICE ?? "").trim();
@@ -324,6 +330,19 @@ const audioDeviceCandidates = (() => {
 })();
 let audioDeviceIndex = 0;
 let audioStartupErrorCount = 0;
+const perf = {
+  frameDecoded: 0,
+  frameSent: 0,
+  frameDropped: 0,
+  frameBytesSent: 0,
+  audioChunkSent: 0,
+  audioBytesB64: 0,
+  gpsSent: 0,
+};
+
+function fmtRatePerSec(value, secs) {
+  return (secs > 0 ? value / secs : 0).toFixed(1);
+}
 
 function startFfmpeg() {
   if (shuttingDown || ffmpegProc) return;
@@ -440,10 +459,23 @@ function onMjpegChunk(chunk) {
     if (end === -1) break;
     const frame = mjpegBuffer.subarray(0, end + 2);
     mjpegBuffer = mjpegBuffer.subarray(end + 2);
+    perf.frameDecoded += 1;
     const now = Date.now();
     if (now - lastFrameSentAt >= FRAME_SEND_MS) {
+      const ws = upstreamWs;
+      if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_UPSTREAM_BUFFER_BYTES) {
+        perf.frameDropped += 1;
+        if (now - lastUpstreamDropLogAt > 2000) {
+          lastUpstreamDropLogAt = now;
+          const queued = ws ? ws.bufferedAmount : 0;
+          console.warn(`Dropping frame to keep realtime latency low (upstream queue=${queued}B)`);
+        }
+        continue;
+      }
       lastFrameSentAt = now;
-      sendUpstream({ type: "frame", ts: now, jpegBase64: frame.toString("base64") });
+      perf.frameSent += 1;
+      perf.frameBytesSent += frame.length;
+      sendUpstreamFrame(frame);
     }
   }
 }
@@ -481,6 +513,7 @@ function connectUpstreamLoop() {
       encoderId: ENCODER_ID,
       meta: { videoDevice: VIDEO_DEVICE, gpsPath: GPS_PATH, gpsBaud: GPS_BAUD },
     });
+    perf.gpsSent += 1;
     sendUpstream({ type: "gps", data: gpsPublicJson() });
     console.log("Connected to reciever");
   });
@@ -515,8 +548,24 @@ function connectUpstreamLoop() {
 function sendUpstream(obj) {
   const ws = upstreamWs;
   if (!ws || !wsConnected || ws.readyState !== WebSocket.OPEN) return;
+  if (obj?.type === "audio" && typeof obj.audioBase64 === "string") {
+    perf.audioChunkSent += 1;
+    perf.audioBytesB64 += obj.audioBase64.length;
+  } else if (obj?.type === "gps") {
+    perf.gpsSent += 1;
+  }
   try {
     ws.send(JSON.stringify(obj));
+  } catch {
+    // ignore
+  }
+}
+
+function sendUpstreamFrame(frameBuffer) {
+  const ws = upstreamWs;
+  if (!ws || !wsConnected || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(frameBuffer, { binary: true });
   } catch {
     // ignore
   }
@@ -611,6 +660,7 @@ if (GPS_SOURCE === "gpsd") {
 } else {
   console.log(`GPS source: auto (gpsd ${GPSD_HOST}:${GPSD_PORT} then serial ${GPS_PATH ?? "disabled"})`);
 }
+if (PERF_LOG_ENABLED) console.log(`Perf log: every ${Math.round(PERF_LOG_MS / 1000)}s`);
 
 connectControlLoop();
 if (GPS_SOURCE === "gpsd") {
@@ -626,6 +676,42 @@ if (GPS_SOURCE === "gpsd") {
 startFfmpeg();
 startFfmpegAudio();
 connectUpstreamLoop();
+
+if (PERF_LOG_ENABLED) {
+  let lastPerfAt = Date.now();
+  let lastCpuUsage = process.cpuUsage();
+  setInterval(() => {
+    if (shuttingDown) return;
+    const now = Date.now();
+    const elapsedSec = Math.max(0.001, (now - lastPerfAt) / 1000);
+    lastPerfAt = now;
+    const cpuUsageNow = process.cpuUsage();
+    const cpuDeltaUser = cpuUsageNow.user - lastCpuUsage.user;
+    const cpuDeltaSystem = cpuUsageNow.system - lastCpuUsage.system;
+    lastCpuUsage = cpuUsageNow;
+    const cpuPctSingleCore = ((cpuDeltaUser + cpuDeltaSystem) / (elapsedSec * 1e6)) * 100;
+    const cpuPctAllCores = cpuPctSingleCore / Math.max(1, os.cpus().length);
+    const load1 = os.loadavg()[0];
+    const rssMb = process.memoryUsage().rss / (1024 * 1024);
+    const ws = upstreamWs;
+    const wsQueue = ws && ws.readyState === WebSocket.OPEN ? ws.bufferedAmount : 0;
+    const vKbps = ((perf.frameBytesSent * 8) / 1000) / elapsedSec;
+    const aKbps = ((perf.audioBytesB64 * 8) / 1000) / elapsedSec;
+    console.log(
+      `[PERF] inFPS=${fmtRatePerSec(perf.frameDecoded, elapsedSec)} outFPS=${fmtRatePerSec(perf.frameSent, elapsedSec)} ` +
+      `dropFPS=${fmtRatePerSec(perf.frameDropped, elapsedSec)} vKbps=${vKbps.toFixed(0)} aKbps=${aKbps.toFixed(0)} ` +
+      `gps/s=${fmtRatePerSec(perf.gpsSent, elapsedSec)} wsQ=${wsQueue}B ` +
+      `cpu1=${cpuPctSingleCore.toFixed(1)}% cpuAll=${cpuPctAllCores.toFixed(1)}% load1=${load1.toFixed(2)} rss=${rssMb.toFixed(0)}MB`,
+    );
+    perf.frameDecoded = 0;
+    perf.frameSent = 0;
+    perf.frameDropped = 0;
+    perf.frameBytesSent = 0;
+    perf.audioChunkSent = 0;
+    perf.audioBytesB64 = 0;
+    perf.gpsSent = 0;
+  }, PERF_LOG_MS);
+}
 
 let signalCount = 0;
 for (const sig of ["SIGINT", "SIGTERM"]) {

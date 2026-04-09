@@ -40,6 +40,7 @@ let servoReqId = 0;
 const pendingServoAcks = new Map();
 const videoSubscribers = new Set();
 const audioSubscribers = new Set();
+const MAX_SUBSCRIBER_BUFFER_BYTES = Number(process.env.MONITOR_SUBSCRIBER_MAX_BUFFER_BYTES ?? "524288");
 const CAMERA_STALE_MS = Number(process.env.MONITOR_CAMERA_STALE_MS ?? "2500");
 const GPS_STALE_MS = Number(process.env.MONITOR_GPS_STALE_MS ?? "4500");
 const CONTROL_LOCK_MS = Number(process.env.MONITOR_CONTROL_LOCK_MS ?? "5000");
@@ -124,7 +125,13 @@ function broadcastFrame(jpeg) {
   ]);
   for (const res of videoSubscribers) {
     try {
-      if (!res.writableEnded) res.write(part);
+      if (res.writableEnded) {
+        videoSubscribers.delete(res);
+        continue;
+      }
+      // Skip this frame for slow clients instead of buffering delay.
+      if (res.writableNeedDrain || res.writableLength > MAX_SUBSCRIBER_BUFFER_BYTES) continue;
+      res.write(part);
     } catch {
       videoSubscribers.delete(res);
     }
@@ -163,7 +170,11 @@ app.get("/video_feed", (req, res) => {
   videoSubscribers.add(res);
   if (streamActive && latestJpeg) {
     try {
-      broadcastFrame(latestJpeg);
+      res.write(Buffer.concat([
+        Buffer.from("--frame\r\nContent-Type: image/jpeg\r\n\r\n"),
+        latestJpeg,
+        Buffer.from("\r\n"),
+      ]));
     } catch {
       // ignore
     }
@@ -309,7 +320,18 @@ ingestWss.on("connection", (ws) => {
   console.log("Encoder connected");
   broadcastGps(gpsWss);
 
-  ws.on("message", (raw) => {
+  ws.on("message", (raw, isBinary) => {
+    if (isBinary) {
+      try {
+        stats.framesReceived += 1;
+        latestJpeg = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+        latestFrameTs = Date.now();
+        if (streamActive) broadcastFrame(latestJpeg);
+      } catch {
+        // ignore malformed binary frame
+      }
+      return;
+    }
     let msg = null;
     try {
       msg = JSON.parse(String(raw));
