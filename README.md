@@ -32,8 +32,9 @@ Useful encoder env vars:
 - `MONITOR_GPS_PATH` (auto-picks `/dev/ttyACM0` or `/dev/ttyUSB0`)
 - `MONITOR_VIDEO_DEVICE` (default `/dev/video0`)
 - `MONITOR_AUDIO_ENABLED` (default `true`)
-- `MONITOR_AUDIO_DEVICE` (ALSA input, default `default`)
-- `MONITOR_AUDIO_SAMPLE_RATE`, `MONITOR_AUDIO_CHANNELS`, `MONITOR_AUDIO_BITRATE` (defaults `44100`, `1`, `96k`)
+- `MONITOR_AUDIO_DEVICE` (`auto` or unset = scan `arecord -l`; or e.g. `hw:1,0` tried first with fallbacks)
+- `MONITOR_AUDIO_DEVICE_MATCH` (optional substring to prefer a capture card when multiple exist, e.g. `Streamer`)
+- `MONITOR_AUDIO_SAMPLE_RATE`, `MONITOR_AUDIO_CHANNELS`, `MONITOR_AUDIO_CHUNK_SAMPLES` (defaults `48000`, `1`, `1024`)
 - `MONITOR_HOMING_SERVO_A`, `MONITOR_HOMING_SERVO_B` (defaults `50`, `50`)
 
 Servo protocol remains:

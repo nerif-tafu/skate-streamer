@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -27,6 +27,8 @@ const AUDIO_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(AUD
 const AUDIO_SAMPLE_RATE = Number(process.env.MONITOR_AUDIO_SAMPLE_RATE ?? "48000");
 const AUDIO_CHANNELS = Number(process.env.MONITOR_AUDIO_CHANNELS ?? "1");
 const AUDIO_CHUNK_SAMPLES = Number(process.env.MONITOR_AUDIO_CHUNK_SAMPLES ?? "1024");
+/** Prefer capture devices whose arecord line contains this substring (case-insensitive), e.g. "Live Streamer" or "USB Audio" */
+const AUDIO_DEVICE_MATCH = (process.env.MONITOR_AUDIO_DEVICE_MATCH ?? "").trim().toLowerCase();
 const PERF_LOG_ENABLED_RAW = (process.env.MONITOR_PERF_LOG ?? "true").toLowerCase();
 const PERF_LOG_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(PERF_LOG_ENABLED_RAW);
 const PERF_LOG_MS = Math.max(1000, Number(process.env.MONITOR_PERF_LOG_MS ?? "2000"));
@@ -324,13 +326,82 @@ let lastFrameSentAt = 0;
 const FRAME_SEND_MS = FRAME_SEND_CAP_FPS > 0 ? Math.max(1, Math.round(1000 / Math.max(1, FRAME_SEND_CAP_FPS))) : 0;
 let lastUpstreamDropLogAt = 0;
 let ffmpegAudioProc = null;
-const audioDeviceCandidates = (() => {
-  const explicit = (process.env.MONITOR_AUDIO_DEVICE ?? "").trim();
-  if (explicit) return [explicit];
-  return ["default", "plughw:1,0", "hw:1,0"];
-})();
+
+function parseArecordList() {
+  try {
+    return execSync("arecord -l", { encoding: "utf8", timeout: 8000, maxBuffer: 65536 });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Parse `arecord -l` and return ordered ALSA device strings.
+ * Card/device indices change after reboot; this avoids hardcoding hw:1,0.
+ */
+function devicesFromArecordOutput(text) {
+  const lines = String(text).split("\n");
+  const entries = [];
+  const re = /^card\s+(\d+):\s*(.+),\s*device\s+(\d+):/i;
+  for (const line of lines) {
+    const m = line.match(re);
+    if (!m) continue;
+    entries.push({ card: m[1], device: m[3], name: m[2].trim() });
+  }
+  if (!entries.length) return [];
+
+  const preferred = [];
+  const rest = [];
+  for (const e of entries) {
+    const bucket =
+      AUDIO_DEVICE_MATCH && e.name.toLowerCase().includes(AUDIO_DEVICE_MATCH) ? preferred : rest;
+    bucket.push(`plughw:${e.card},${e.device}`, `hw:${e.card},${e.device}`);
+  }
+  const ordered = [...preferred, ...rest];
+  const seen = new Set();
+  const out = [];
+  for (const d of ordered) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push(d);
+  }
+  return out;
+}
+
+function buildAudioDeviceCandidatesList() {
+  const explicitRaw = (process.env.MONITOR_AUDIO_DEVICE ?? "").trim();
+  const explicit = explicitRaw.toLowerCase() === "auto" ? "" : explicitRaw;
+
+  const fromArecord = devicesFromArecordOutput(parseArecordList());
+  const seen = new Set();
+  const list = [];
+
+  const push = (d) => {
+    if (!d || seen.has(d)) return;
+    seen.add(d);
+    list.push(d);
+  };
+
+  if (explicit) push(explicit);
+  for (const d of fromArecord) push(d);
+  for (const d of ["default", "sysdefault"]) push(d);
+  for (let c = 0; c <= 4; c += 1) {
+    push(`plughw:${c},0`);
+    push(`hw:${c},0`);
+  }
+
+  return list.length ? list : ["default"];
+}
+
+let audioDeviceCandidates = buildAudioDeviceCandidatesList();
 let audioDeviceIndex = 0;
 let audioStartupErrorCount = 0;
+
+function refreshAudioDeviceCandidates() {
+  audioDeviceCandidates = buildAudioDeviceCandidatesList();
+  audioDeviceIndex = 0;
+  console.log(`Audio ALSA candidates (${audioDeviceCandidates.length}): ${audioDeviceCandidates.slice(0, 8).join(", ")}${audioDeviceCandidates.length > 8 ? "…" : ""}`);
+}
 const perf = {
   frameDecoded: 0,
   frameSent: 0,
@@ -443,9 +514,10 @@ function startFfmpegAudio() {
       return;
     }
     if (startupFailed) {
+      refreshAudioDeviceCandidates();
       audioStartupErrorCount += 1;
       const waitMs = audioStartupErrorCount >= 5 ? 10000 : 2500;
-      console.error(`Audio capture unavailable on ${audioInput}. Retrying in ${Math.round(waitMs / 1000)}s`);
+      console.error(`Audio capture unavailable on ${audioInput}. Rescanned ALSA; retrying in ${Math.round(waitMs / 1000)}s`);
       after(waitMs, startFfmpegAudio);
       return;
     }
@@ -670,7 +742,10 @@ function shutdown() {
 
 console.log(`Encoder starting (id: ${ENCODER_ID})`);
 console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${TARGET_FPS}`);
-if (AUDIO_ENABLED) console.log(`Audio: ${AUDIO_DEVICE} ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz PCM`);
+if (AUDIO_ENABLED) {
+  console.log(`Audio: ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz PCM (trying ${audioDeviceCandidates.length} ALSA devices)`);
+  console.log(`  first: ${audioDeviceCandidates.slice(0, 6).join(", ")}${audioDeviceCandidates.length > 6 ? "…" : ""}`);
+}
 else console.log("Audio: disabled");
 if (GPS_SOURCE === "gpsd") {
   console.log(`GPS source: gpsd ${GPSD_HOST}:${GPSD_PORT}`);
