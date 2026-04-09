@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# Install a systemd user service that, on each start (including boot), runs
-# `git pull --ff-only` in this repository, then starts the receiver (Node).
+# Install a systemd unit (on the Pi) that runs `git pull --ff-only` in this repo,
+# then starts the encoder (camera, GPS, servos → upstream receiver).
 #
-# Requirements on the host: git, node (v20+), npm deps installed once (`npm ci`
-# in reciever/), ffmpeg in PATH for recordings. For private repos, configure
-# git credentials (SSH key or credential helper) for the service user.
+# Requirements: git, Node (v20+), `npm ci` once in encoder/, serial/GPS/camera access
+# for the service user. For private repos, configure git credentials for that user.
+#
+# This does NOT install the receiver — run that on your server separately (e.g. npm / Docker).
 #
 # Usage (from repo root, on Linux):
 #   chmod +x install-systemd-skate-streamer.sh
 #   sudo ./install-systemd-skate-streamer.sh
-#   # If node is only on your user PATH (nvm, fnm), the script resolves it via SUDO_USER.
-#   # Override explicitly:
-#   sudo SKATE_NODE_BIN=/home/you/.nvm/versions/node/v24.14.1/bin/node ./install-systemd-skate-streamer.sh
+#   sudo SKATE_NODE_BIN=/path/to/node ./install-systemd-skate-streamer.sh
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RECEIVER_DIR="${SKATE_RECEIVER_DIR:-$REPO_ROOT/reciever}"
-SERVICE_NAME="${SKATE_SYSTEMD_UNIT:-skate-streamer-receiver}"
+ENCODER_DIR="${SKATE_ENCODER_DIR:-$REPO_ROOT/encoder}"
+SERVICE_NAME="${SKATE_SYSTEMD_UNIT:-skate-streamer-encoder}"
 SERVICE_USER="${SKATE_SERVICE_USER:-${SUDO_USER:-$USER}}"
 SYSTEMD_DIR="/etc/systemd/system"
 UNIT_PATH="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
@@ -37,7 +36,6 @@ resolve_node_bin() {
   if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
     local su_home
     su_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-    # NVM: login shells often skip .bashrc; source nvm.sh explicitly (non-interactive-safe).
     if [[ -n "$su_home" && -s "${su_home}/.nvm/nvm.sh" ]]; then
       if command -v runuser &>/dev/null; then
         candidate="$(runuser -u "$SUDO_USER" -- env HOME="${su_home}" bash -c '. "${HOME}/.nvm/nvm.sh" 2>/dev/null; command -v node' 2>/dev/null || true)"
@@ -49,7 +47,6 @@ resolve_node_bin() {
         return 0
       fi
     fi
-    # NVM: latest installed version without invoking nvm.sh (same layout as `which node`).
     if [[ -n "$su_home" ]]; then
       local -a nvm_nodes
       shopt -s nullglob
@@ -116,8 +113,8 @@ fi
 
 echo "Using Node: $NODE_BIN"
 
-if [[ ! -f "$RECEIVER_DIR/server.js" ]]; then
-  echo "Receiver not found at $RECEIVER_DIR (expected server.js)." >&2
+if [[ ! -f "${ENCODER_DIR}/encoder.js" ]]; then
+  echo "Encoder not found at ${ENCODER_DIR} (expected encoder.js)." >&2
   exit 1
 fi
 
@@ -127,23 +124,20 @@ if ! id -u "$SERVICE_USER" &>/dev/null; then
 fi
 
 if [[ "$SERVICE_USER" == "root" ]]; then
-  echo "Warning: service User=root. Prefer SKATE_SERVICE_USER=deploy (or similar) with a normal account." >&2
+  echo "Warning: service User=root. Prefer SKATE_SERVICE_USER=finn-rm (or similar) with a normal account." >&2
 fi
 
-# The service user must be able to write to .git (for git pull) and read the tree.
-# Clone the repo as that user, or adjust ownership (e.g. chown -R user:group "$REPO_ROOT").
-
-# Match `npm start`: Node loads reciever/.env via --env-file (systemd EnvironmentFile alone is not the same as Node's parser).
+# Match `npm start` in encoder/: Node loads encoder/.env via --env-file.
 NODE_ENVFILE_ARG=""
-if [[ -f "${RECEIVER_DIR}/.env" ]]; then
-  NODE_ENVFILE_ARG="--env-file=${RECEIVER_DIR}/.env "
+if [[ -f "${ENCODER_DIR}/.env" ]]; then
+  NODE_ENVFILE_ARG="--env-file=${ENCODER_DIR}/.env "
 else
-  echo "Warning: no ${RECEIVER_DIR}/.env — copy reciever/.env.example to reciever/.env and re-run this script (or restart the unit after creating it)." >&2
+  echo "Warning: no ${ENCODER_DIR}/.env — copy encoder/.env.example if present, set MONITOR_RECEIVER_WS_URL, then re-run or restart the unit." >&2
 fi
 
 cat >"/tmp/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=Skate Streamer receiver (git pull then Node)
+Description=Skate Streamer encoder (git pull then Node)
 After=network-online.target
 Wants=network-online.target
 
@@ -151,11 +145,10 @@ Wants=network-online.target
 Type=simple
 User=${SERVICE_USER}
 Group=$(id -gn "$SERVICE_USER")
-WorkingDirectory=${RECEIVER_DIR}
+WorkingDirectory=${ENCODER_DIR}
 Environment=NODE_ENV=production
-# Pull updates before start; leading '-' ignores failure (e.g. offline) so the service still starts
 ExecStartPre=-/usr/bin/git -C ${REPO_ROOT} pull --ff-only
-ExecStart=${NODE_BIN} ${NODE_ENVFILE_ARG}${RECEIVER_DIR}/server.js
+ExecStart=${NODE_BIN} ${NODE_ENVFILE_ARG}${ENCODER_DIR}/encoder.js
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -174,5 +167,7 @@ systemctl enable "${SERVICE_NAME}.service"
 systemctl restart "${SERVICE_NAME}.service"
 
 echo "Installed ${UNIT_PATH}"
+echo "Unit:   ${SERVICE_NAME}.service"
 echo "Status: systemctl status ${SERVICE_NAME}.service"
 echo "Logs:   journalctl -u ${SERVICE_NAME}.service -f"
+echo "If you still have an old receiver unit on this Pi, disable it: sudo systemctl disable --now skate-streamer-receiver.service 2>/dev/null || true"
