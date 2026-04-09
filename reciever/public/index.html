@@ -195,20 +195,7 @@
       margin-left: auto;
       min-width: 220px;
     }
-    .avsync-wrap {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 250px;
-    }
     .volume-wrap label {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      white-space: nowrap;
-    }
-    .avsync-wrap label {
       font-size: 11px;
       font-weight: 700;
       text-transform: uppercase;
@@ -219,19 +206,8 @@
       width: 140px;
       accent-color: var(--fg);
     }
-    #avDelay {
-      width: 150px;
-      accent-color: var(--fg);
-    }
     #volumeValue {
       min-width: 40px;
-      text-align: right;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-    }
-    #avDelayValue {
-      min-width: 55px;
       text-align: right;
       font-size: 11px;
       font-weight: 700;
@@ -335,11 +311,6 @@
           <input id="volume" type="range" min="0" max="100" value="70" step="1">
           <span id="volumeValue">70%</span>
         </div>
-        <div class="avsync-wrap">
-          <label for="avDelay">A/V Delay</label>
-          <input id="avDelay" type="range" min="0" max="2000" value="350" step="10">
-          <span id="avDelayValue">350ms</span>
-        </div>
       </div>
       <div class="row">
         <button type="button" class="btn preset" data-preset="forward">Forward</button>
@@ -370,18 +341,12 @@
     const presetButtons = document.querySelectorAll(".preset");
     const volumeInput = document.getElementById("volume");
     const volumeValue = document.getElementById("volumeValue");
-    const avDelayInput = document.getElementById("avDelay");
-    const avDelayValue = document.getElementById("avDelayValue");
-    const audioPlayer = new Audio("/audio_feed");
-    audioPlayer.autoplay = true;
-    audioPlayer.preload = "none";
-    audioPlayer.volume = 0.7;
-    audioPlayer.crossOrigin = "anonymous";
     let audioCtx = null;
-    let mediaSource = null;
-    let delayNode = null;
     let gainNode = null;
-    let usingWebAudio = false;
+    let audioWs = null;
+    let audioSampleRate = 48000;
+    let audioChannels = 1;
+    let nextAudioTime = 0;
     let streamIsActive = true;
     let lastGpsPayload = null;
     let cameraSwitchTimer = null;
@@ -463,26 +428,81 @@
 
     function tryStartAudio() {
       ensureAudioGraph();
-      const p = audioPlayer.play();
-      if (p && typeof p.catch === "function") p.catch(() => {});
+      if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+      if (!audioWs || audioWs.readyState > 1) connectAudioWs();
     }
 
     function ensureAudioGraph() {
-      if (usingWebAudio) return;
+      if (audioCtx && gainNode) return;
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       try {
         audioCtx = new Ctx();
-        mediaSource = audioCtx.createMediaElementSource(audioPlayer);
-        delayNode = audioCtx.createDelay(2.5);
         gainNode = audioCtx.createGain();
-        mediaSource.connect(delayNode);
-        delayNode.connect(gainNode);
         gainNode.connect(audioCtx.destination);
-        usingWebAudio = true;
       } catch (_) {
-        usingWebAudio = false;
+        audioCtx = null;
+        gainNode = null;
       }
+    }
+
+    function connectAudioWs() {
+      const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(wsProto + "//" + location.host + "/ws/audio");
+      ws.binaryType = "arraybuffer";
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg?.type === "audioConfig") {
+              const sr = Number(msg.sampleRate ?? 48000);
+              const ch = Number(msg.channels ?? 1);
+              if (Number.isFinite(sr) && sr > 0) audioSampleRate = sr;
+              if (Number.isFinite(ch) && ch > 0 && ch <= 2) audioChannels = ch;
+            }
+          } catch (_) {}
+          return;
+        }
+        playPcmChunk(ev.data);
+      };
+      ws.onclose = () => {
+        if (audioWs === ws) {
+          audioWs = null;
+          nextAudioTime = 0;
+          if (streamIsActive) setTimeout(connectAudioWs, 800);
+        }
+      };
+      ws.onerror = () => {};
+      audioWs = ws;
+    }
+
+    function playPcmChunk(arrayBuffer) {
+      ensureAudioGraph();
+      if (!audioCtx || !gainNode || !(arrayBuffer instanceof ArrayBuffer)) return;
+      const int16 = new Int16Array(arrayBuffer);
+      const channels = Math.max(1, audioChannels | 0);
+      const frameCount = Math.floor(int16.length / channels);
+      if (frameCount <= 0) return;
+      const audioBuffer = audioCtx.createBuffer(channels, frameCount, audioSampleRate);
+      if (channels === 1) {
+        const ch0 = audioBuffer.getChannelData(0);
+        for (let i = 0; i < frameCount; i += 1) ch0[i] = int16[i] / 32768;
+      } else {
+        const ch0 = audioBuffer.getChannelData(0);
+        const ch1 = audioBuffer.getChannelData(1);
+        for (let i = 0, f = 0; f < frameCount; f += 1, i += 2) {
+          ch0[f] = int16[i] / 32768;
+          ch1[f] = int16[i + 1] / 32768;
+        }
+      }
+      const now = audioCtx.currentTime;
+      if (!nextAudioTime || nextAudioTime < now - 0.08) nextAudioTime = now + 0.03;
+      if (nextAudioTime - now > 0.2) nextAudioTime = now + 0.03;
+      const src = audioCtx.createBufferSource();
+      src.buffer = audioBuffer;
+      src.connect(gainNode);
+      src.start(nextAudioTime);
+      nextAudioTime += audioBuffer.duration;
     }
 
     function renderLock(data) {
@@ -558,29 +578,16 @@
 
     function setVolume(v) {
       const pct = Math.max(0, Math.min(100, Number(v) || 0));
-      if (usingWebAudio && gainNode) gainNode.gain.value = pct / 100;
-      else audioPlayer.volume = pct / 100;
+      ensureAudioGraph();
+      if (gainNode) gainNode.gain.value = pct / 100;
       volumeValue.textContent = `${pct}%`;
       localStorage.setItem("monitorVolumePct", String(pct));
     }
-    function setAvDelay(v) {
-      const ms = Math.max(0, Math.min(2000, Number(v) || 0));
-      if (usingWebAudio && delayNode) delayNode.delayTime.value = ms / 1000;
-      avDelayValue.textContent = `${ms}ms`;
-      localStorage.setItem("monitorAvDelayMs", String(ms));
-    }
     const savedVolume = Number(localStorage.getItem("monitorVolumePct") ?? "70");
-    const savedAvDelay = Number(localStorage.getItem("monitorAvDelayMs") ?? "350");
     volumeInput.value = String(Number.isFinite(savedVolume) ? Math.max(0, Math.min(100, savedVolume)) : 70);
-    avDelayInput.value = String(Number.isFinite(savedAvDelay) ? Math.max(0, Math.min(2000, savedAvDelay)) : 350);
     setVolume(volumeInput.value);
-    setAvDelay(avDelayInput.value);
     volumeInput.addEventListener("input", () => {
       setVolume(volumeInput.value);
-      tryStartAudio();
-    });
-    avDelayInput.addEventListener("input", () => {
-      setAvDelay(avDelayInput.value);
       tryStartAudio();
     });
   </script>
@@ -618,16 +625,14 @@
         if (active) setCameraSource("/video_feed");
         else {
           streamImg.removeAttribute("src");
-          try {
-            audioPlayer.pause();
-            audioPlayer.src = "";
-          } catch (_) {}
+          if (audioWs) {
+            try { audioWs.close(); } catch (_) {}
+            audioWs = null;
+          }
+          nextAudioTime = 0;
         }
         if (active) {
-          try {
-            if (!audioPlayer.src) audioPlayer.src = "/audio_feed";
-            tryStartAudio();
-          } catch (_) {}
+          tryStartAudio();
         }
       }
       const encoderConnected = !!(data && data.encoderConnected);

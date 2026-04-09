@@ -18,6 +18,7 @@ let encoderMeta = null;
 let latestJpeg = null;
 let latestFrameTs = null;
 let latestAudioTs = null;
+let audioConfig = { sampleRate: 48000, channels: 1 };
 let streamActive = true;
 const processStartedAt = Date.now();
 const gpsState = {
@@ -39,7 +40,6 @@ const gpsState = {
 let servoReqId = 0;
 const pendingServoAcks = new Map();
 const videoSubscribers = new Set();
-const audioSubscribers = new Set();
 const MAX_SUBSCRIBER_BUFFER_BYTES = Number(process.env.MONITOR_SUBSCRIBER_MAX_BUFFER_BYTES ?? "524288");
 const CAMERA_STALE_MS = Number(process.env.MONITOR_CAMERA_STALE_MS ?? "2500");
 const GPS_STALE_MS = Number(process.env.MONITOR_GPS_STALE_MS ?? "4500");
@@ -138,12 +138,14 @@ function broadcastFrame(jpeg) {
   }
 }
 
-function broadcastAudioChunk(audioChunk) {
-  for (const res of audioSubscribers) {
-    try {
-      if (!res.writableEnded) res.write(audioChunk);
-    } catch {
-      audioSubscribers.delete(res);
+function broadcastAudioChunk(wssAudio, audioChunk) {
+  for (const client of wssAudio.clients) {
+    if (client.readyState === 1) {
+      try {
+        client.send(audioChunk, { binary: true });
+      } catch {
+        // ignore
+      }
     }
   }
 }
@@ -185,24 +187,6 @@ app.get("/video_feed", (req, res) => {
   }
   req.on("close", () => {
     videoSubscribers.delete(res);
-    try {
-      res.end();
-    } catch {
-      // ignore
-    }
-  });
-});
-
-app.get("/audio_feed", (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "audio/mpeg",
-    "Cache-Control": "no-cache, no-store, must-revalidate",
-    Pragma: "no-cache",
-    Connection: "keep-alive",
-  });
-  audioSubscribers.add(res);
-  req.on("close", () => {
-    audioSubscribers.delete(res);
     try {
       res.end();
     } catch {
@@ -292,6 +276,10 @@ const gpsWss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
 });
+const audioWss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false,
+});
 
 httpServer.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
@@ -304,6 +292,12 @@ httpServer.on("upgrade", (req, socket, head) => {
   if (url === "/ws/gps") {
     gpsWss.handleUpgrade(req, socket, head, (ws) => {
       gpsWss.emit("connection", ws, req);
+    });
+    return;
+  }
+  if (url === "/ws/audio") {
+    audioWss.handleUpgrade(req, socket, head, (ws) => {
+      audioWss.emit("connection", ws, req);
     });
     return;
   }
@@ -349,6 +343,20 @@ ingestWss.on("connection", (ws) => {
         connectedAt: Date.now(),
         ...(msg.meta ?? {}),
       };
+      audioConfig = {
+        sampleRate: Number(msg.meta?.audioSampleRate ?? audioConfig.sampleRate ?? 48000),
+        channels: Number(msg.meta?.audioChannels ?? audioConfig.channels ?? 1),
+      };
+      const cfgPayload = JSON.stringify({ type: "audioConfig", ...audioConfig });
+      for (const client of audioWss.clients) {
+        if (client.readyState === 1) {
+          try {
+            client.send(cfgPayload);
+          } catch {
+            // ignore
+          }
+        }
+      }
       broadcastGps(gpsWss);
       return;
     }
@@ -370,11 +378,11 @@ ingestWss.on("connection", (ws) => {
       }
       return;
     }
-    if (msg.type === "audio" && typeof msg.audioBase64 === "string") {
+    if (msg.type === "audioPcm" && typeof msg.audioBase64 === "string") {
       try {
         const chunk = Buffer.from(msg.audioBase64, "base64");
         latestAudioTs = Number(msg.ts ?? Date.now());
-        if (streamActive) broadcastAudioChunk(chunk);
+        if (streamActive) broadcastAudioChunk(audioWss, chunk);
       } catch {
         // ignore malformed audio chunk
       }
@@ -408,6 +416,14 @@ gpsWss.on("connection", (ws) => {
   }
 });
 
+audioWss.on("connection", (ws) => {
+  try {
+    ws.send(JSON.stringify({ type: "audioConfig", ...audioConfig }));
+  } catch {
+    // ignore
+  }
+});
+
 function shutdown() {
   shuttingDown = true;
   for (const res of videoSubscribers) {
@@ -423,20 +439,6 @@ function shutdown() {
     }
   }
   videoSubscribers.clear();
-  for (const res of audioSubscribers) {
-    try {
-      res.end();
-    } catch {
-      // ignore
-    }
-    try {
-      res.socket?.destroy();
-    } catch {
-      // ignore
-    }
-  }
-  audioSubscribers.clear();
-
   for (const [id, resolve] of pendingServoAcks.entries()) {
     resolve({ ok: false, error: "Server shutting down", reqId: id });
   }
@@ -449,6 +451,11 @@ function shutdown() {
   }
   try {
     gpsWss.close();
+  } catch {
+    // ignore
+  }
+  try {
+    audioWss.close();
   } catch {
     // ignore
   }

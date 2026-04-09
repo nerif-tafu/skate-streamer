@@ -24,9 +24,9 @@ const VIDEO_DEVICE = process.env.MONITOR_VIDEO_DEVICE ?? `/dev/video${WEBCAM_IND
 const AUDIO_DEVICE = process.env.MONITOR_AUDIO_DEVICE ?? "default";
 const AUDIO_ENABLED_RAW = (process.env.MONITOR_AUDIO_ENABLED ?? "true").toLowerCase();
 const AUDIO_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(AUDIO_ENABLED_RAW);
-const AUDIO_SAMPLE_RATE = Number(process.env.MONITOR_AUDIO_SAMPLE_RATE ?? "44100");
+const AUDIO_SAMPLE_RATE = Number(process.env.MONITOR_AUDIO_SAMPLE_RATE ?? "48000");
 const AUDIO_CHANNELS = Number(process.env.MONITOR_AUDIO_CHANNELS ?? "1");
-const AUDIO_BITRATE = process.env.MONITOR_AUDIO_BITRATE ?? "96k";
+const AUDIO_CHUNK_SAMPLES = Number(process.env.MONITOR_AUDIO_CHUNK_SAMPLES ?? "1024");
 const PERF_LOG_ENABLED_RAW = (process.env.MONITOR_PERF_LOG ?? "true").toLowerCase();
 const PERF_LOG_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(PERF_LOG_ENABLED_RAW);
 const PERF_LOG_MS = Math.max(1000, Number(process.env.MONITOR_PERF_LOG_MS ?? "2000"));
@@ -338,7 +338,7 @@ const perf = {
   frameSkippedByCap: 0,
   frameBytesSent: 0,
   audioChunkSent: 0,
-  audioBytesB64: 0,
+  audioBytes: 0,
   gpsSent: 0,
 };
 
@@ -403,19 +403,29 @@ function startFfmpegAudio() {
     String(AUDIO_CHANNELS),
     "-ar",
     String(AUDIO_SAMPLE_RATE),
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    AUDIO_BITRATE,
+    "-fflags",
+    "nobuffer",
+    "-flags",
+    "low_delay",
+    "-flush_packets",
+    "1",
     "-f",
-    "mp3",
+    "s16le",
     "pipe:1",
   ];
   console.log("Starting FFmpeg audio:", FFMPEG_PATH, args.join(" "));
   ffmpegAudioProc = spawn(FFMPEG_PATH, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let audioCarry = Buffer.alloc(0);
+  const bytesPerSample = 2;
+  const bytesPerChunk = Math.max(1, AUDIO_CHUNK_SAMPLES) * Math.max(1, AUDIO_CHANNELS) * bytesPerSample;
   ffmpegAudioProc.stdout.on("data", (chunk) => {
     if (!chunk?.length) return;
-    sendUpstream({ type: "audio", ts: Date.now(), audioBase64: chunk.toString("base64") });
+    audioCarry = Buffer.concat([audioCarry, chunk]);
+    while (audioCarry.length >= bytesPerChunk) {
+      const piece = audioCarry.subarray(0, bytesPerChunk);
+      audioCarry = audioCarry.subarray(bytesPerChunk);
+      sendUpstream({ type: "audioPcm", ts: Date.now(), audioBase64: piece.toString("base64") });
+    }
   });
   ffmpegAudioProc.stderr.on("data", (b) => {
     const t = b.toString().trim();
@@ -515,7 +525,13 @@ function connectUpstreamLoop() {
       type: "hello",
       role: "encoder",
       encoderId: ENCODER_ID,
-      meta: { videoDevice: VIDEO_DEVICE, gpsPath: GPS_PATH, gpsBaud: GPS_BAUD },
+      meta: {
+        videoDevice: VIDEO_DEVICE,
+        gpsPath: GPS_PATH,
+        gpsBaud: GPS_BAUD,
+        audioSampleRate: AUDIO_SAMPLE_RATE,
+        audioChannels: AUDIO_CHANNELS,
+      },
     });
     perf.gpsSent += 1;
     sendUpstream({ type: "gps", data: gpsPublicJson() });
@@ -552,9 +568,9 @@ function connectUpstreamLoop() {
 function sendUpstream(obj) {
   const ws = upstreamWs;
   if (!ws || !wsConnected || ws.readyState !== WebSocket.OPEN) return;
-  if (obj?.type === "audio" && typeof obj.audioBase64 === "string") {
+  if (obj?.type === "audioPcm" && typeof obj.audioBase64 === "string") {
     perf.audioChunkSent += 1;
-    perf.audioBytesB64 += obj.audioBase64.length;
+    perf.audioBytes += Math.floor((obj.audioBase64.length * 3) / 4);
   } else if (obj?.type === "gps") {
     perf.gpsSent += 1;
   }
@@ -654,7 +670,7 @@ function shutdown() {
 
 console.log(`Encoder starting (id: ${ENCODER_ID})`);
 console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${TARGET_FPS}`);
-if (AUDIO_ENABLED) console.log(`Audio: ${AUDIO_DEVICE} ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz (${AUDIO_BITRATE})`);
+if (AUDIO_ENABLED) console.log(`Audio: ${AUDIO_DEVICE} ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz PCM`);
 else console.log("Audio: disabled");
 if (GPS_SOURCE === "gpsd") {
   console.log(`GPS source: gpsd ${GPSD_HOST}:${GPSD_PORT}`);
@@ -700,7 +716,7 @@ if (PERF_LOG_ENABLED) {
     const ws = upstreamWs;
     const wsQueue = ws && ws.readyState === WebSocket.OPEN ? ws.bufferedAmount : 0;
     const vKbps = ((perf.frameBytesSent * 8) / 1000) / elapsedSec;
-    const aKbps = ((perf.audioBytesB64 * 8) / 1000) / elapsedSec;
+    const aKbps = ((perf.audioBytes * 8) / 1000) / elapsedSec;
     console.log(
       `[PERF] inFPS=${fmtRatePerSec(perf.frameDecoded, elapsedSec)} outFPS=${fmtRatePerSec(perf.frameSent, elapsedSec)} ` +
       `dropFPS=${fmtRatePerSec(perf.frameDropped, elapsedSec)} capSkipFPS=${fmtRatePerSec(perf.frameSkippedByCap, elapsedSec)} ` +
@@ -714,7 +730,7 @@ if (PERF_LOG_ENABLED) {
     perf.frameSkippedByCap = 0;
     perf.frameBytesSent = 0;
     perf.audioChunkSent = 0;
-    perf.audioBytesB64 = 0;
+    perf.audioBytes = 0;
     perf.gpsSent = 0;
   }, PERF_LOG_MS);
 }
