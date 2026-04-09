@@ -20,6 +20,12 @@ const HOMING_SERVO_B = Number(process.env.MONITOR_HOMING_SERVO_B ?? "50");
 
 const WEBCAM_INDEX = Number(process.env.MONITOR_WEBCAM_INDEX ?? "0");
 const VIDEO_DEVICE = process.env.MONITOR_VIDEO_DEVICE ?? `/dev/video${WEBCAM_INDEX}`;
+const AUDIO_DEVICE = process.env.MONITOR_AUDIO_DEVICE ?? "default";
+const AUDIO_ENABLED_RAW = (process.env.MONITOR_AUDIO_ENABLED ?? "true").toLowerCase();
+const AUDIO_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(AUDIO_ENABLED_RAW);
+const AUDIO_SAMPLE_RATE = Number(process.env.MONITOR_AUDIO_SAMPLE_RATE ?? "44100");
+const AUDIO_CHANNELS = Number(process.env.MONITOR_AUDIO_CHANNELS ?? "1");
+const AUDIO_BITRATE = process.env.MONITOR_AUDIO_BITRATE ?? "96k";
 const FRAME_WIDTH = Number(process.env.MONITOR_FRAME_WIDTH ?? "1280");
 const FRAME_HEIGHT = Number(process.env.MONITOR_FRAME_HEIGHT ?? "720");
 const TARGET_FPS = Number(process.env.MONITOR_CAMERA_FPS ?? "15");
@@ -310,6 +316,14 @@ let ffmpegProc = null;
 let mjpegBuffer = Buffer.alloc(0);
 let lastFrameSentAt = 0;
 const FRAME_SEND_MS = Math.max(40, Math.round(1000 / Math.max(1, TARGET_FPS)));
+let ffmpegAudioProc = null;
+const audioDeviceCandidates = (() => {
+  const explicit = (process.env.MONITOR_AUDIO_DEVICE ?? "").trim();
+  if (explicit) return [explicit];
+  return ["default", "plughw:1,0", "hw:1,0"];
+})();
+let audioDeviceIndex = 0;
+let audioStartupErrorCount = 0;
 
 function startFfmpeg() {
   if (shuttingDown || ffmpegProc) return;
@@ -350,6 +364,66 @@ function startFfmpeg() {
   ffmpegProc.on("error", () => {
     ffmpegProc = null;
     if (!shuttingDown) after(2000, startFfmpeg);
+  });
+}
+
+function startFfmpegAudio() {
+  if (!AUDIO_ENABLED || shuttingDown || ffmpegAudioProc) return;
+  const audioInput = audioDeviceCandidates[Math.min(audioDeviceIndex, audioDeviceCandidates.length - 1)] ?? AUDIO_DEVICE;
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "alsa",
+    "-i",
+    audioInput,
+    "-ac",
+    String(AUDIO_CHANNELS),
+    "-ar",
+    String(AUDIO_SAMPLE_RATE),
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    AUDIO_BITRATE,
+    "-f",
+    "mp3",
+    "pipe:1",
+  ];
+  console.log("Starting FFmpeg audio:", FFMPEG_PATH, args.join(" "));
+  ffmpegAudioProc = spawn(FFMPEG_PATH, args, { stdio: ["ignore", "pipe", "pipe"] });
+  ffmpegAudioProc.stdout.on("data", (chunk) => {
+    if (!chunk?.length) return;
+    sendUpstream({ type: "audio", ts: Date.now(), audioBase64: chunk.toString("base64") });
+  });
+  ffmpegAudioProc.stderr.on("data", (b) => {
+    const t = b.toString().trim();
+    if (t) console.error("[ffmpeg-audio]", t);
+  });
+  ffmpegAudioProc.on("close", (code) => {
+    ffmpegAudioProc = null;
+    if (shuttingDown) return;
+    const startupFailed = code !== 0;
+    if (startupFailed && audioDeviceIndex < audioDeviceCandidates.length - 1) {
+      audioDeviceIndex += 1;
+      const nextInput = audioDeviceCandidates[audioDeviceIndex];
+      console.warn(`Audio input failed, trying fallback device: ${nextInput}`);
+      after(600, startFfmpegAudio);
+      return;
+    }
+    if (startupFailed) {
+      audioStartupErrorCount += 1;
+      const waitMs = audioStartupErrorCount >= 5 ? 10000 : 2500;
+      console.error(`Audio capture unavailable on ${audioInput}. Retrying in ${Math.round(waitMs / 1000)}s`);
+      after(waitMs, startFfmpegAudio);
+      return;
+    }
+    audioStartupErrorCount = 0;
+    after(1200, startFfmpegAudio);
+  });
+  ffmpegAudioProc.on("error", () => {
+    ffmpegAudioProc = null;
+    if (!shuttingDown) after(2000, startFfmpegAudio);
   });
 }
 
@@ -490,6 +564,22 @@ function shutdown() {
       }
     }, 500);
   }
+  const ffAudio = ffmpegAudioProc;
+  ffmpegAudioProc = null;
+  if (ffAudio && !ffAudio.killed) {
+    try {
+      ffAudio.kill("SIGTERM");
+    } catch {
+      // ignore
+    }
+    setTimeout(() => {
+      try {
+        if (!ffAudio.killed) ffAudio.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }, 500);
+  }
   if (upstreamWs) {
     try {
       upstreamWs.close();
@@ -511,6 +601,8 @@ function shutdown() {
 
 console.log(`Encoder starting (id: ${ENCODER_ID})`);
 console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${TARGET_FPS}`);
+if (AUDIO_ENABLED) console.log(`Audio: ${AUDIO_DEVICE} ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz (${AUDIO_BITRATE})`);
+else console.log("Audio: disabled");
 if (GPS_SOURCE === "gpsd") {
   console.log(`GPS source: gpsd ${GPSD_HOST}:${GPSD_PORT}`);
 } else if (GPS_SOURCE === "serial") {
@@ -532,6 +624,7 @@ if (GPS_SOURCE === "gpsd") {
   });
 }
 startFfmpeg();
+startFfmpegAudio();
 connectUpstreamLoop();
 
 let signalCount = 0;

@@ -163,6 +163,31 @@
       letter-spacing: 0.09em;
       font-weight: 700;
     }
+    .volume-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      min-width: 220px;
+    }
+    .volume-wrap label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      white-space: nowrap;
+    }
+    #volume {
+      width: 140px;
+      accent-color: var(--fg);
+    }
+    #volumeValue {
+      min-width: 40px;
+      text-align: right;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
     .ended-panel {
       display: none;
       min-height: 0;
@@ -255,6 +280,11 @@
       <div class="row">
         <span id="lockStatus" class="status-chip status-free">Controls free</span>
         <span id="controlHint" class="vals">Arrow keys enabled</span>
+        <div class="volume-wrap">
+          <label for="volume">Volume</label>
+          <input id="volume" type="range" min="0" max="100" value="70" step="1">
+          <span id="volumeValue">70%</span>
+        </div>
       </div>
       <div class="row">
         <button type="button" class="btn preset" data-preset="forward">Forward</button>
@@ -280,6 +310,13 @@
     const lockStatus = document.getElementById("lockStatus");
     const controlHint = document.getElementById("controlHint");
     const presetButtons = document.querySelectorAll(".preset");
+    const volumeInput = document.getElementById("volume");
+    const volumeValue = document.getElementById("volumeValue");
+    const audioPlayer = new Audio("/audio_feed");
+    audioPlayer.autoplay = true;
+    audioPlayer.preload = "none";
+    audioPlayer.volume = 0.7;
+    audioPlayer.crossOrigin = "anonymous";
     let streamIsActive = true;
     let lastGpsPayload = null;
 
@@ -315,6 +352,11 @@
 
     function setControlsEnabled(enabled) {
       presetButtons.forEach((b) => { b.disabled = !enabled; });
+    }
+
+    function tryStartAudio() {
+      const p = audioPlayer.play();
+      if (p && typeof p.catch === "function") p.catch(() => {});
     }
 
     function renderLock(data) {
@@ -367,6 +409,7 @@
 
     presetButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
+        tryStartAudio();
         const preset = PRESETS[btn.dataset.preset];
         if (!preset) return;
         tryMove(preset.pan, preset.tilt);
@@ -380,10 +423,25 @@
       const l = lockInfo(lastGpsPayload);
       if (!l.free && !l.mine) return;
       ev.preventDefault();
+      tryStartAudio();
       if (key === "ArrowLeft") tryMove(panPos - STEP, tiltPos);
       if (key === "ArrowRight") tryMove(panPos + STEP, tiltPos);
       if (key === "ArrowUp") tryMove(panPos, tiltPos - STEP);
       if (key === "ArrowDown") tryMove(panPos, tiltPos + STEP);
+    });
+
+    function setVolume(v) {
+      const pct = Math.max(0, Math.min(100, Number(v) || 0));
+      audioPlayer.volume = pct / 100;
+      volumeValue.textContent = `${pct}%`;
+      localStorage.setItem("monitorVolumePct", String(pct));
+    }
+    const savedVolume = Number(localStorage.getItem("monitorVolumePct") ?? "70");
+    volumeInput.value = String(Number.isFinite(savedVolume) ? Math.max(0, Math.min(100, savedVolume)) : 70);
+    setVolume(volumeInput.value);
+    volumeInput.addEventListener("input", () => {
+      setVolume(volumeInput.value);
+      tryStartAudio();
     });
   </script>
 
@@ -418,7 +476,19 @@
         streamIsActive = active;
         document.body.classList.toggle("stream-ended", !active);
         if (active) streamImg.src = "/video_feed";
-        else streamImg.removeAttribute("src");
+        else {
+          streamImg.removeAttribute("src");
+          try {
+            audioPlayer.pause();
+            audioPlayer.src = "";
+          } catch (_) {}
+        }
+        if (active) {
+          try {
+            if (!audioPlayer.src) audioPlayer.src = "/audio_feed";
+            tryStartAudio();
+          } catch (_) {}
+        }
       }
       const cameraStale = !data || !data.cameraFresh;
       const gpsStale = !data || !data.gpsFresh || !data.ok;
@@ -452,6 +522,7 @@
     gpsWs.onmessage = (ev) => { try { onGps(JSON.parse(ev.data)); invalidateMapSize(); } catch (_) {} };
     gpsWs.onerror = () => { servoStatus.textContent = "GPS websocket error"; };
     fetch("/api/gps").then((r) => r.json()).then((d) => { onGps(d); invalidateMapSize(); }).catch(() => {});
+    tryStartAudio();
   </script>
 </body>
 </html>

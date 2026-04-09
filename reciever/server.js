@@ -17,6 +17,7 @@ let encoderSocket = null;
 let encoderMeta = null;
 let latestJpeg = null;
 let latestFrameTs = null;
+let latestAudioTs = null;
 let streamActive = true;
 const processStartedAt = Date.now();
 const gpsState = {
@@ -38,6 +39,7 @@ const gpsState = {
 let servoReqId = 0;
 const pendingServoAcks = new Map();
 const videoSubscribers = new Set();
+const audioSubscribers = new Set();
 const CAMERA_STALE_MS = Number(process.env.MONITOR_CAMERA_STALE_MS ?? "2500");
 const GPS_STALE_MS = Number(process.env.MONITOR_GPS_STALE_MS ?? "4500");
 const CONTROL_LOCK_MS = Number(process.env.MONITOR_CONTROL_LOCK_MS ?? "5000");
@@ -129,6 +131,16 @@ function broadcastFrame(jpeg) {
   }
 }
 
+function broadcastAudioChunk(audioChunk) {
+  for (const res of audioSubscribers) {
+    try {
+      if (!res.writableEnded) res.write(audioChunk);
+    } catch {
+      audioSubscribers.delete(res);
+    }
+  }
+}
+
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -158,6 +170,24 @@ app.get("/video_feed", (req, res) => {
   }
   req.on("close", () => {
     videoSubscribers.delete(res);
+    try {
+      res.end();
+    } catch {
+      // ignore
+    }
+  });
+});
+
+app.get("/audio_feed", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "audio/mpeg",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Pragma: "no-cache",
+    Connection: "keep-alive",
+  });
+  audioSubscribers.add(res);
+  req.on("close", () => {
+    audioSubscribers.delete(res);
     try {
       res.end();
     } catch {
@@ -314,6 +344,16 @@ ingestWss.on("connection", (ws) => {
       }
       return;
     }
+    if (msg.type === "audio" && typeof msg.audioBase64 === "string") {
+      try {
+        const chunk = Buffer.from(msg.audioBase64, "base64");
+        latestAudioTs = Number(msg.ts ?? Date.now());
+        if (streamActive) broadcastAudioChunk(chunk);
+      } catch {
+        // ignore malformed audio chunk
+      }
+      return;
+    }
     if (msg.type === "servoAck") {
       const resolver = pendingServoAcks.get(Number(msg.reqId));
       if (resolver) resolver(msg);
@@ -357,6 +397,19 @@ function shutdown() {
     }
   }
   videoSubscribers.clear();
+  for (const res of audioSubscribers) {
+    try {
+      res.end();
+    } catch {
+      // ignore
+    }
+    try {
+      res.socket?.destroy();
+    } catch {
+      // ignore
+    }
+  }
+  audioSubscribers.clear();
 
   for (const [id, resolve] of pendingServoAcks.entries()) {
     resolve({ ok: false, error: "Server shutting down", reqId: id });
@@ -408,6 +461,9 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 setInterval(() => {
   if (latestFrameTs && Date.now() - latestFrameTs > 6000) {
     latestJpeg = null;
+  }
+  if (latestAudioTs && Date.now() - latestAudioTs > 6000) {
+    latestAudioTs = null;
   }
 }, 2000);
 

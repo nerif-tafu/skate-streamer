@@ -31,6 +31,9 @@ Useful encoder env vars:
 - `MONITOR_SERIAL_PORT` (default `/dev/serial0`)
 - `MONITOR_GPS_PATH` (auto-picks `/dev/ttyACM0` or `/dev/ttyUSB0`)
 - `MONITOR_VIDEO_DEVICE` (default `/dev/video0`)
+- `MONITOR_AUDIO_ENABLED` (default `true`)
+- `MONITOR_AUDIO_DEVICE` (ALSA input, default `default`)
+- `MONITOR_AUDIO_SAMPLE_RATE`, `MONITOR_AUDIO_CHANNELS`, `MONITOR_AUDIO_BITRATE` (defaults `44100`, `1`, `96k`)
 - `MONITOR_HOMING_SERVO_A`, `MONITOR_HOMING_SERVO_B` (defaults `50`, `50`)
 
 Servo protocol remains:
