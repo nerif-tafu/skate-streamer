@@ -126,7 +126,7 @@
           const when = v.createdAt ? new Date(v.createdAt).toISOString() : "n/a";
           return `
             <article class="card">
-              <video controls preload="metadata" src="${v.url}"></video>
+              <video controls preload="none" playsinline src="${v.url}"></video>
               <div class="meta">${v.name}</div>
               <div class="meta">${when} · ${fmtBytes(Number(v.sizeBytes))}</div>
             </article>

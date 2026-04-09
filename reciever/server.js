@@ -16,7 +16,17 @@ const INGEST_PATH = process.env.MONITOR_INGEST_PATH ?? "/ingest";
 const RECORDINGS_DIR = process.env.MONITOR_RECORDINGS_DIR
   ? path.resolve(process.env.MONITOR_RECORDINGS_DIR)
   : path.join(__dirname, "recordings");
-const RECORDING_FPS = Math.max(1, Number(process.env.MONITOR_RECORDING_FPS ?? "15"));
+/** Framerate for recording ffmpeg; prefers encoder hello `meta.cameraFps`, else env fallback. */
+function resolveRecordingFps() {
+  const fromEncoder = Number(encoderMeta?.cameraFps);
+  if (Number.isFinite(fromEncoder) && fromEncoder >= 1) {
+    return Math.min(120, Math.max(1, Math.round(fromEncoder)));
+  }
+  const fromEnv = Number(
+    process.env.MONITOR_VIDEO_FPS ?? process.env.MONITOR_RECORDING_FPS ?? "30",
+  );
+  return Math.min(120, Math.max(1, Math.round(Number.isFinite(fromEnv) ? fromEnv : 30)));
+}
 const FFMPEG_BIN = process.env.MONITOR_FFMPEG_PATH ?? "ffmpeg";
 const ADMIN_ALLOWED_EMAILS = new Set(
   String(process.env.MONITOR_ADMIN_ALLOWED_EMAILS ?? "xmicroninjax@gmail.com")
@@ -126,6 +136,7 @@ function startRecording() {
   if (!streamActive || recordingProc) return;
   const outName = recordingPathForNow();
   const outPath = path.join(RECORDINGS_DIR, outName);
+  const fps = resolveRecordingFps();
   const args = [
     "-hide_banner",
     "-loglevel",
@@ -134,7 +145,7 @@ function startRecording() {
     "-f",
     "mjpeg",
     "-framerate",
-    String(RECORDING_FPS),
+    String(fps),
     "-i",
     "pipe:0",
     "-an",
@@ -164,7 +175,7 @@ function startRecording() {
   proc.on("error", (err) => {
     console.error("Recording process error:", err?.message ?? err);
   });
-  console.log(`Recording started: ${outName}`);
+  console.log(`Recording started: ${outName} @ ${fps}fps`);
 }
 
 function stopRecording() {
@@ -275,6 +286,7 @@ function adminStatsJson() {
     videoSubscribers: videoSubscribers.size,
     ...stats,
     fpsApprox,
+    recordingFps: resolveRecordingFps(),
     recordingActive: !!recordingProc,
     recordingName,
     recordingStartedAt,

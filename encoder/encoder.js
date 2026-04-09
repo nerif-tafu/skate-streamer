@@ -34,7 +34,7 @@ const PERF_LOG_ENABLED = !["0", "off", "false", "disable", "disabled"].includes(
 const PERF_LOG_MS = Math.max(1000, Number(process.env.MONITOR_PERF_LOG_MS ?? "2000"));
 const FRAME_WIDTH = Number(process.env.MONITOR_FRAME_WIDTH ?? "1280");
 const FRAME_HEIGHT = Number(process.env.MONITOR_FRAME_HEIGHT ?? "720");
-const TARGET_FPS = Number(process.env.MONITOR_CAMERA_FPS ?? "15");
+const TARGET_FPS = Number(process.env.MONITOR_VIDEO_FPS ?? process.env.MONITOR_CAMERA_FPS ?? "30");
 const FRAME_SEND_CAP_FPS = Number(process.env.MONITOR_FRAME_SEND_CAP_FPS ?? "0");
 const JPEG_QUALITY = Math.min(100, Math.max(1, Number(process.env.MONITOR_JPEG_QUALITY ?? "75")));
 const MAX_UPSTREAM_BUFFER_BYTES = Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "262144");
@@ -599,6 +599,7 @@ function connectUpstreamLoop() {
       encoderId: ENCODER_ID,
       meta: {
         videoDevice: VIDEO_DEVICE,
+        cameraFps: TARGET_FPS,
         gpsPath: GPS_PATH,
         gpsBaud: GPS_BAUD,
         audioSampleRate: AUDIO_SAMPLE_RATE,

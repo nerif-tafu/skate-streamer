@@ -17,6 +17,7 @@ Defaults:
 
 - UI: `http://127.0.0.1:9090/`
 - ingest websocket for encoder: `ws://<reciever-host>:9090/ingest`
+- MP4 recording framerate follows the encoder: the Pi sends **`cameraFps` in its ingest `hello`**, and the receiver’s ffmpeg uses that. Set **`MONITOR_VIDEO_FPS`** on the encoder (default `30`). The receiver only needs **`MONITOR_VIDEO_FPS`** (or legacy `MONITOR_RECORDING_FPS`) as a fallback when no encoder has connected yet.
 
 ## 2) Start the encoder (on Pi)
 
@@ -36,6 +37,7 @@ Useful encoder env vars:
 - `MONITOR_AUDIO_DEVICE_MATCH` (optional substring to prefer a capture card when multiple exist, e.g. `Streamer`)
 - `MONITOR_AUDIO_SAMPLE_RATE`, `MONITOR_AUDIO_CHANNELS`, `MONITOR_AUDIO_CHUNK_SAMPLES` (defaults `48000`, `1`, `1024`)
 - `MONITOR_HOMING_SERVO_A`, `MONITOR_HOMING_SERVO_B` (defaults `50`, `50`)
+- `MONITOR_VIDEO_FPS` (default `30`; alias `MONITOR_CAMERA_FPS`; lower on a Pi if CPU or USB bandwidth struggles)
 
 Servo protocol remains:
 
