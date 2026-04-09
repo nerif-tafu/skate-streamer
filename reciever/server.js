@@ -36,11 +36,12 @@ let latestFrameTs = null;
 let latestAudioTs = null;
 let audioConfig = { sampleRate: 48000, channels: 1 };
 let streamActive = false;
+/** When admin started the live stream; null while stream is off (admin Uptime). */
+let streamStartedAt = null;
 let recordingProc = null;
 let recordingName = null;
 let recordingStartedAt = null;
 const adminSessions = new Map();
-const processStartedAt = Date.now();
 const gpsState = {
   ok: false,
   lat: null,
@@ -265,10 +266,11 @@ function adminStatsJson() {
   const recordings = listRecordings();
   const recordingsSig = recordings.map((r) => `${r.name}:${r.sizeBytes}`).join("|");
   const base = gpsJson();
-  const upMs = Date.now() - processStartedAt;
+  const streamUptimeMs =
+    streamActive && streamStartedAt != null ? Math.max(0, Date.now() - streamStartedAt) : 0;
   const fpsApprox = base.frameAgeMs != null && base.frameAgeMs <= 2000 ? Math.max(0, Math.round(1000 / Math.max(base.frameAgeMs, 1))) : 0;
   return {
-    uptimeMs: upMs,
+    uptimeMs: streamUptimeMs,
     streamActive,
     videoSubscribers: videoSubscribers.size,
     ...stats,
@@ -457,9 +459,11 @@ app.post("/api/admin/stream", (req, res) => {
   const action = String(req.body?.action ?? "").toLowerCase();
   if (action === "start") {
     streamActive = true;
+    streamStartedAt = Date.now();
     startRecording();
   } else if (action === "end" || action === "stop") {
     streamActive = false;
+    streamStartedAt = null;
     stopRecording();
   }
   else return res.status(400).json({ ok: false, error: "action must be start or end" });

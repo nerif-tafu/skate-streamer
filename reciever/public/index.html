@@ -43,7 +43,7 @@
       min-height: 100dvh;
       padding: 10px;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-rows: auto minmax(0, 1fr);
       gap: 10px;
       background-image:
         linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
@@ -94,19 +94,24 @@
       height: 100%;
       min-height: 0;
       display: grid;
-      grid-template-columns: 7fr 3fr;
       gap: 10px;
+      grid-template-columns: 7fr 3fr;
+      grid-template-rows: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "cam map"
+        "ctl ctl";
     }
+    .camera-pane { grid-area: cam; }
+    .map-pane { grid-area: map; }
     .stage.encoder-offline {
       grid-template-columns: 1fr;
-      grid-template-rows: 1fr;
+      grid-template-rows: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "cam"
+        "ctl";
     }
     .stage.encoder-offline .map-pane {
       display: none;
-    }
-    .stage.encoder-offline .camera-pane {
-      grid-column: 1 / -1;
-      grid-row: 1 / -1;
     }
     .camera-pane, .map-pane {
       position: relative;
@@ -118,8 +123,17 @@
       transition: opacity 180ms ease-out;
     }
     .camera-pane.loading-mode {
-      display: grid;
-      place-items: center;
+      min-height: 0;
+    }
+    .camera-fullscreen-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 10;
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
     .camera-hud {
       position: absolute;
@@ -127,16 +141,23 @@
       right: 8px;
       bottom: 8px;
       display: flex;
-      align-items: center;
-      justify-content: space-between;
+      align-items: stretch;
+      justify-content: stretch;
       gap: 8px;
       pointer-events: none;
       z-index: 9;
     }
+    .camera-hud .volume-wrap {
+      flex: 1 1 auto;
+      width: 100%;
+      min-width: 0;
+      max-width: none;
+    }
     .camera-hud > * {
       pointer-events: auto;
     }
-    .camera-pane.no-video-feed .camera-hud {
+    .camera-pane.no-video-feed .camera-hud,
+    .camera-pane.no-video-feed .camera-fullscreen-btn {
       display: none;
     }
     .camera-pane.pane-switching-hidden,
@@ -152,18 +173,28 @@
       width: 100%;
       height: 100%;
       object-fit: contain;
+      object-position: center center;
       display: block;
       background: var(--bg);
       opacity: 1;
       transition: opacity 180ms ease-out;
     }
-    .stream.gif-half {
-      width: auto;
-      height: auto;
-      max-width: 75%;
+    /* Fixed box = 100% × 75% of pane, centered; GIF is letterboxed inside via contain (cannot overflow) */
+    .camera-pane.loading-mode .stream.gif-half {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 100%;
+      height: 75%;
+      max-width: 100%;
       max-height: 75%;
-      place-self: center;
+      object-fit: contain;
+      object-position: center center;
       margin: 0;
+      box-sizing: border-box;
+      pointer-events: none;
+      z-index: 1;
     }
     .stream.switching { opacity: 0; }
     .map-pane {
@@ -180,7 +211,52 @@
       letter-spacing: 0.14em;
     }
     #map { min-height: 0; width: 100%; background: var(--muted); }
+    .map-tools-wrap {
+      display: flex;
+      flex-direction: column;
+      border: 2px solid var(--border);
+      background: var(--bg);
+      box-shadow: none;
+    }
+    .map-tools-wrap .map-tool-btn {
+      margin: 0;
+      padding: 8px 10px;
+      min-height: 40px;
+      min-width: 88px;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border: none;
+      border-bottom: 2px solid var(--border);
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .map-tools-wrap .map-tool-btn:only-child {
+      border-bottom: none;
+    }
+    .map-tools-wrap .map-tool-btn:hover:not(:disabled) {
+      background: var(--fg);
+      color: var(--bg);
+    }
+    .map-tools-wrap .map-tool-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      z-index: 1;
+    }
+    .map-tools-wrap .map-tool-btn.map-tool-btn-follow-on {
+      background: var(--fg);
+      color: var(--bg);
+    }
+    .map-tools-wrap .map-tool-btn.map-tool-btn-follow-on:hover:not(:disabled) {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
     .controls {
+      grid-area: ctl;
       display: grid;
       grid-template-columns: 1fr;
       gap: 0;
@@ -234,10 +310,12 @@
       font-weight: 700;
     }
     .volume-wrap {
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: 8px;
       min-width: 220px;
+      min-height: 44px;
+      box-sizing: border-box;
       border: 2px solid var(--border);
       background: var(--bg);
       padding: 6px 8px;
@@ -364,19 +442,67 @@
       letter-spacing: 0.12em;
       text-align: center;
     }
+    @media (min-width: 641px) {
+      /* Fill camera pane: layout uses full stage height for column math; cover removes side letterboxing when column is maxed out */
+      .camera-pane .stream:not(.gif-half) {
+        object-fit: cover;
+      }
+    }
     @media (max-width: 900px) {
       .stage { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 640px) {
       .app { padding: 6px; gap: 6px; }
-      .stage { grid-template-columns: 1fr; grid-template-rows: 1.25fr 1fr; }
-      .stage.encoder-offline { grid-template-rows: 1fr; }
+      .stage {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1.25fr) auto minmax(0, 1fr);
+        grid-template-areas:
+          "cam"
+          "ctl"
+          "map";
+      }
+      .stage.encoder-offline {
+        grid-template-rows: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "cam"
+          "ctl";
+      }
       header { align-items: flex-start; }
       header h1 { font-size: clamp(18px, 7vw, 28px); }
       #servoStatus { max-width: 100%; width: 100%; text-align: left; }
       .ended-copy { white-space: normal; }
-      .camera-hud { left: 6px; right: 6px; bottom: 6px; flex-wrap: wrap; justify-content: flex-start; }
-      .volume-wrap { min-width: 180px; }
+      .camera-fullscreen-btn {
+        top: 6px;
+        right: 6px;
+      }
+      .camera-hud {
+        left: 6px;
+        right: 6px;
+        bottom: 6px;
+        flex-wrap: nowrap;
+        align-items: stretch;
+        gap: 6px;
+      }
+      .volume-wrap {
+        flex: 1 1 0;
+        min-width: 0;
+        max-width: none;
+        gap: 6px;
+        padding: 5px 6px;
+      }
+      .volume-wrap label {
+        flex-shrink: 0;
+      }
+      #volume {
+        flex: 1 1 0;
+        width: auto;
+        min-width: 56px;
+        max-width: none;
+      }
+      #volumeValue {
+        flex-shrink: 0;
+        min-width: 36px;
+      }
       .controls .row { padding: 6px; }
       .btn { padding: 8px 10px; min-height: 44px; flex: 1 1 calc(50% - 6px); }
     }
@@ -406,33 +532,34 @@
     <div class="stage">
       <div class="camera-pane">
         <img class="stream" alt="live feed" decoding="async" />
+        <button type="button" id="cameraFullscreenBtn" class="btn camera-fullscreen-btn">Fullscreen</button>
         <div class="camera-hud">
-          <button type="button" id="cameraFullscreenBtn" class="btn">Fullscreen</button>
           <div class="volume-wrap">
             <label for="volume">Volume</label>
-            <input id="volume" type="range" min="0" max="100" value="70" step="1">
-            <span id="volumeValue">70%</span>
+            <input id="volume" type="range" min="0" max="100" value="0" step="1">
+            <span id="volumeValue">0%</span>
           </div>
         </div>
         <div id="cameraBrb" class="brb">BRB<small>Camera reconnecting…</small></div>
       </div>
+
+      <div class="controls">
+        <div class="row">
+          <span id="lockStatus" class="status-chip status-free">Controls free</span>
+          <span id="controlHint" class="vals">Arrow keys enabled</span>
+        </div>
+        <div class="row">
+          <button type="button" class="btn preset" data-preset="forward">Forward</button>
+          <button type="button" class="btn preset" data-preset="backward">Backward</button>
+          <button type="button" class="btn preset" data-preset="left">Left</button>
+          <button type="button" class="btn preset" data-preset="right">Right</button>
+        </div>
+      </div>
+
       <div class="map-pane">
         <div class="label">GPS</div>
         <div id="map" role="application" aria-label="Map"></div>
         <div id="gpsBrb" class="brb">BRB<small>GPS signal missing</small></div>
-      </div>
-    </div>
-
-    <div class="controls">
-      <div class="row">
-        <span id="lockStatus" class="status-chip status-free">Controls free</span>
-        <span id="controlHint" class="vals">Arrow keys enabled</span>
-      </div>
-      <div class="row">
-        <button type="button" class="btn preset" data-preset="forward">Forward</button>
-        <button type="button" class="btn preset" data-preset="backward">Backward</button>
-        <button type="button" class="btn preset" data-preset="left">Left</button>
-        <button type="button" class="btn preset" data-preset="right">Right</button>
       </div>
     </div>
 
@@ -513,11 +640,15 @@
         return;
       }
       const w = stageEl.clientWidth;
-      const h = stageEl.clientHeight;
-      if (!w || !h) return;
+      const gapPx = 10;
+      const controlsEl = stageEl.querySelector(".controls");
+      const controlsH = controlsEl ? controlsEl.getBoundingClientRect().height : 0;
+      let row1H = stageEl.clientHeight - controlsH - gapPx;
+      if (row1H < 40) row1H = Math.max(40, stageEl.clientHeight * 0.45);
+      if (!w || row1H < 1) return;
       const MIN_MAP_W = window.innerWidth <= 900 ? 220 : 260;
       const maxCameraW = Math.max(0, w - MIN_MAP_W);
-      const idealCameraW = Math.round(h * cameraAspectRatio);
+      const idealCameraW = Math.round(row1H * cameraAspectRatio);
       const cameraW = Math.max(0, Math.min(maxCameraW, idealCameraW));
       stageEl.style.gridTemplateColumns = `${cameraW}px minmax(${MIN_MAP_W}px, 1fr)`;
       requestAnimationFrame(invalidateMapSize);
@@ -775,8 +906,8 @@
       volumeValue.textContent = `${pct}%`;
       localStorage.setItem("monitorVolumePct", String(pct));
     }
-    const savedVolume = Number(localStorage.getItem("monitorVolumePct") ?? "70");
-    volumeInput.value = String(Number.isFinite(savedVolume) ? Math.max(0, Math.min(100, savedVolume)) : 70);
+    const savedVolume = Number(localStorage.getItem("monitorVolumePct") ?? "0");
+    volumeInput.value = String(Number.isFinite(savedVolume) ? Math.max(0, Math.min(100, savedVolume)) : 0);
     setVolume(volumeInput.value);
     volumeInput.addEventListener("input", () => {
       setVolume(volumeInput.value);
@@ -793,10 +924,63 @@
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
       maxZoom: 19,
     }).addTo(map);
+    map.whenReady(() => {
+      try {
+        map.invalidateSize({ animate: false, pan: false });
+      } catch (_) {}
+    });
 
     let marker = null;
     let accuracyCircle = null;
     let didFit = false;
+    let followGps = false;
+    let mapFollowBtn = null;
+
+    function mapMotionOk() {
+      return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    }
+
+    function updateMapToolButtons() {
+      if (mapFollowBtn) {
+        mapFollowBtn.setAttribute("aria-pressed", followGps ? "true" : "false");
+        mapFollowBtn.classList.toggle("map-tool-btn-follow-on", followGps);
+        mapFollowBtn.textContent = followGps ? "Following" : "Follow";
+      }
+    }
+
+    const MapToolsControl = L.Control.extend({
+      options: { position: "topright" },
+      onAdd() {
+        const wrap = L.DomUtil.create("div", "map-tools-wrap leaflet-control");
+        const followBtn = L.DomUtil.create("button", "map-tool-btn", wrap);
+        followBtn.type = "button";
+        followBtn.textContent = "Follow";
+        followBtn.setAttribute("aria-label", "Follow GPS position on map");
+        followBtn.setAttribute("aria-pressed", "false");
+        mapFollowBtn = followBtn;
+        L.DomEvent.disableClickPropagation(wrap);
+        L.DomEvent.disableScrollPropagation(wrap);
+        L.DomEvent.on(followBtn, "click", L.DomEvent.stop);
+        L.DomEvent.on(followBtn, "click", () => {
+          followGps = !followGps;
+          updateMapToolButtons();
+          if (followGps && marker) {
+            const z = map.getZoom();
+            syncMapViewTo(marker.getLatLng(), z);
+          }
+        });
+        updateMapToolButtons();
+        return wrap;
+      },
+    });
+    map.addControl(new MapToolsControl());
+
+    map.on("dragstart", () => {
+      if (followGps) {
+        followGps = false;
+        updateMapToolButtons();
+      }
+    });
 
     function ensureAccuracyCircle(ll, radiusM) {
       const r = Number.isFinite(radiusM) && radiusM > 0 ? radiusM : DEFAULT_ACCURACY_M;
@@ -845,18 +1029,31 @@
       setBrb(gpsBrb, gpsStale);
       renderLock(data);
       finishStreamBoot();
-      if (!data || !data.ok || data.lat == null || data.lon == null) return;
+      if (!data || !data.ok || data.lat == null || data.lon == null) {
+        updateMapToolButtons();
+        return;
+      }
       const ll = [data.lat, data.lon];
       ensureAccuracyCircle(ll, data.accuracyM);
       if (!marker) {
         marker = L.circleMarker(ll, { radius: 6, color: "#fff", weight: 2, fillColor: "#3b82f6", fillOpacity: 1 }).addTo(map);
-        map.setView(ll, 17);
+        syncMapViewTo(ll, 17);
         didFit = true;
       } else {
         marker.setLatLng(ll);
         if (typeof marker.bringToFront === "function") marker.bringToFront();
-        if (!didFit) { map.setView(ll, 17); didFit = true; }
+        if (!didFit) {
+          syncMapViewTo(ll, 17);
+          didFit = true;
+        } else if (followGps) {
+          try {
+            map.panTo(ll, { animate: mapMotionOk(), duration: 0.22 });
+          } catch (_) {
+            map.setView(ll, map.getZoom(), { animate: false });
+          }
+        }
       }
+      updateMapToolButtons();
     }
 
     function invalidateMapSize() {
@@ -866,6 +1063,21 @@
           try { map.invalidateSize({ animate: false, pan: false }); } catch (_) {}
         });
       } catch (_) {}
+    }
+
+    /** Leaflet often mis-reads #map size before layout; re-invalidate then setView so the target sits in the map center. */
+    function syncMapViewTo(ll, zoom) {
+      const z = Number.isFinite(zoom) ? zoom : map.getZoom();
+      const apply = () => {
+        try {
+          map.invalidateSize({ animate: false, pan: false });
+          map.setView(ll, z, { animate: false });
+        } catch (_) {}
+      };
+      apply();
+      requestAnimationFrame(apply);
+      requestAnimationFrame(() => requestAnimationFrame(apply));
+      setTimeout(apply, 120);
     }
     updateEndedPanelOffset();
     if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => {
