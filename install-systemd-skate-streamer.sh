@@ -8,16 +8,16 @@
 #
 # Usage (from repo root, on Linux):
 #   chmod +x install-systemd-skate-streamer.sh
-#   ./install-systemd-skate-streamer.sh
-#   # or with options:
-#   sudo SKATE_SERVICE_USER=deploy ./install-systemd-skate-streamer.sh
+#   sudo ./install-systemd-skate-streamer.sh
+#   # If node is only on your user PATH (nvm, fnm), the script resolves it via SUDO_USER.
+#   # Override explicitly:
+#   sudo SKATE_NODE_BIN=/home/you/.nvm/versions/node/v24.14.1/bin/node ./install-systemd-skate-streamer.sh
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RECEIVER_DIR="${SKATE_RECEIVER_DIR:-$REPO_ROOT/reciever}"
 SERVICE_NAME="${SKATE_SYSTEMD_UNIT:-skate-streamer-receiver}"
-NODE_BIN="${SKATE_NODE_BIN:-$(command -v node || true)}"
 SERVICE_USER="${SKATE_SERVICE_USER:-${SUDO_USER:-$USER}}"
 SYSTEMD_DIR="/etc/systemd/system"
 UNIT_PATH="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
@@ -27,10 +27,60 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
-  echo "Node.js not found. Set SKATE_NODE_BIN to the node binary path." >&2
+# Under `sudo`, root's PATH usually omits nvm/fnm; resolve node as the invoking user or common locations.
+resolve_node_bin() {
+  if [[ -n "${SKATE_NODE_BIN:-}" ]]; then
+    printf '%s' "$SKATE_NODE_BIN"
+    return 0
+  fi
+  local candidate=""
+  if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    if command -v runuser &>/dev/null; then
+      candidate="$(runuser -u "$SUDO_USER" -- /bin/bash -l -c 'command -v node' 2>/dev/null || true)"
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+      candidate="$(runuser -u "$SUDO_USER" -- env PATH="/usr/local/bin:/usr/bin:/bin:${PATH:-}" command -v node 2>/dev/null || true)"
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    else
+      candidate="$(su - "$SUDO_USER" -s /bin/bash -l -c 'command -v node' 2>/dev/null || true)"
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    fi
+  fi
+  candidate="$(command -v node 2>/dev/null || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  for candidate in /usr/bin/node /usr/local/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+NODE_BIN=""
+if ! NODE_BIN="$(resolve_node_bin)"; then
+  echo "Node.js not found for root or for user ${SUDO_USER:-<none>}." >&2
+  echo "Set SKATE_NODE_BIN to the full path to node (e.g. output of: which node)" >&2
   exit 1
 fi
+
+if [[ ! -x "$NODE_BIN" ]]; then
+  echo "Node binary not executable: $NODE_BIN" >&2
+  exit 1
+fi
+
+echo "Using Node: $NODE_BIN"
 
 if [[ ! -f "$RECEIVER_DIR/server.js" ]]; then
   echo "Receiver not found at $RECEIVER_DIR (expected server.js)." >&2
