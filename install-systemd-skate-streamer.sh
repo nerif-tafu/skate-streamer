@@ -35,8 +35,42 @@ resolve_node_bin() {
   fi
   local candidate=""
   if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    local su_home
+    su_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    # NVM: login shells often skip .bashrc; source nvm.sh explicitly (non-interactive-safe).
+    if [[ -n "$su_home" && -s "${su_home}/.nvm/nvm.sh" ]]; then
+      if command -v runuser &>/dev/null; then
+        candidate="$(runuser -u "$SUDO_USER" -- env HOME="${su_home}" bash -c '. "${HOME}/.nvm/nvm.sh" 2>/dev/null; command -v node' 2>/dev/null || true)"
+      else
+        candidate="$(su - "$SUDO_USER" -s /bin/bash -c '. "${HOME}/.nvm/nvm.sh" 2>/dev/null; command -v node' 2>/dev/null || true)"
+      fi
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    fi
+    # NVM: latest installed version without invoking nvm.sh (same layout as `which node`).
+    if [[ -n "$su_home" ]]; then
+      local -a nvm_nodes
+      shopt -s nullglob
+      nvm_nodes=("${su_home}/.nvm/versions/node/v"*/bin/node)
+      shopt -u nullglob
+      if ((${#nvm_nodes[@]} > 0)); then
+        local nvm_pick
+        nvm_pick="$(printf '%s\n' "${nvm_nodes[@]}" | LC_ALL=C sort -V | tail -n1)"
+        if [[ -x "$nvm_pick" ]]; then
+          printf '%s' "$nvm_pick"
+          return 0
+        fi
+      fi
+    fi
     if command -v runuser &>/dev/null; then
       candidate="$(runuser -u "$SUDO_USER" -- /bin/bash -l -c 'command -v node' 2>/dev/null || true)"
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+      candidate="$(runuser -u "$SUDO_USER" -- /bin/bash -ic 'command -v node' 2>/dev/null || true)"
       if [[ -n "$candidate" && -x "$candidate" ]]; then
         printf '%s' "$candidate"
         return 0
