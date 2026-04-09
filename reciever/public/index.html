@@ -82,20 +82,45 @@
       grid-template-columns: 7fr 3fr;
       gap: 10px;
     }
+    .stage.encoder-offline {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+    }
+    .stage.encoder-offline .map-pane {
+      display: none;
+    }
+    .stage.encoder-offline .camera-pane {
+      grid-column: 1 / -1;
+      grid-row: 1 / -1;
+    }
     .camera-pane, .map-pane {
       position: relative;
       border: 2px solid var(--border);
       background: var(--bg);
       overflow: hidden;
       min-height: 0;
+      opacity: 1;
+      transition: opacity 180ms ease-out;
+    }
+    .camera-pane.pane-switching-hidden,
+    .map-pane.pane-switching-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .map-pane.pane-offline-hidden {
+      opacity: 0;
+      pointer-events: none;
     }
     .stream {
       width: 100%;
       height: 100%;
       object-fit: contain;
       display: block;
-      background: #000;
+      background: var(--bg);
+      opacity: 1;
+      transition: opacity 180ms ease-out;
     }
+    .stream.switching { opacity: 0; }
     .map-pane {
       display: grid;
       grid-template-rows: auto 1fr;
@@ -248,12 +273,13 @@
     @media (max-width: 640px) {
       .app { padding: 6px; gap: 6px; }
       .stage { grid-template-columns: 1fr; grid-template-rows: 1.25fr 1fr; }
+      .stage.encoder-offline { grid-template-rows: 1fr; }
       #servoStatus { max-width: 58%; }
       .controls .row { padding: 6px; }
       .btn { padding: 8px 10px; min-height: 44px; flex: 1 1 calc(50% - 6px); }
     }
     @media (prefers-reduced-motion: reduce) {
-      .btn { transition: none; }
+      .btn, .stream { transition: none; }
     }
   </style>
 </head>
@@ -307,6 +333,9 @@
     const cameraBrb = document.getElementById("cameraBrb");
     const gpsBrb = document.getElementById("gpsBrb");
     const streamImg = document.querySelector(".stream");
+    const stageEl = document.querySelector(".stage");
+    const cameraPane = document.querySelector(".camera-pane");
+    const mapPane = document.querySelector(".map-pane");
     const lockStatus = document.getElementById("lockStatus");
     const controlHint = document.getElementById("controlHint");
     const presetButtons = document.querySelectorAll(".preset");
@@ -319,6 +348,9 @@
     audioPlayer.crossOrigin = "anonymous";
     let streamIsActive = true;
     let lastGpsPayload = null;
+    let cameraSwitchTimer = null;
+    let feedSwitchTimer = null;
+    let lastEncoderConnected = null;
 
     let panPos = 50;
     let tiltPos = 50;
@@ -341,6 +373,45 @@
 
     function setBrb(el, show) {
       el.classList.toggle("show", !!show);
+    }
+
+    function setCameraSource(src, animate = true) {
+      const currentSrc = streamImg.getAttribute("src");
+      if (currentSrc === src) return;
+      if (cameraSwitchTimer) {
+        clearTimeout(cameraSwitchTimer);
+        cameraSwitchTimer = null;
+      }
+      if (!animate) {
+        streamImg.classList.remove("switching");
+        streamImg.setAttribute("src", src);
+        return;
+      }
+      streamImg.classList.add("switching");
+      cameraSwitchTimer = setTimeout(() => {
+        streamImg.setAttribute("src", src);
+        requestAnimationFrame(() => {
+          streamImg.classList.remove("switching");
+        });
+        cameraSwitchTimer = null;
+      }, 140);
+    }
+
+    function setFeedSwitchHidden(hidden) {
+      cameraPane.classList.toggle("pane-switching-hidden", !!hidden);
+      mapPane.classList.toggle("pane-switching-hidden", !!hidden);
+    }
+
+    function animateFeedSwap() {
+      if (feedSwitchTimer) {
+        clearTimeout(feedSwitchTimer);
+        feedSwitchTimer = null;
+      }
+      setFeedSwitchHidden(true);
+      feedSwitchTimer = setTimeout(() => {
+        setFeedSwitchHidden(false);
+        feedSwitchTimer = null;
+      }, 180);
     }
 
     function lockInfo(data) {
@@ -475,7 +546,7 @@
       if (active !== streamIsActive) {
         streamIsActive = active;
         document.body.classList.toggle("stream-ended", !active);
-        if (active) streamImg.src = "/video_feed";
+        if (active) setCameraSource("/video_feed");
         else {
           streamImg.removeAttribute("src");
           try {
@@ -490,9 +561,21 @@
           } catch (_) {}
         }
       }
+      const encoderConnected = !!(data && data.encoderConnected);
+      if (lastEncoderConnected == null) {
+        lastEncoderConnected = encoderConnected;
+      } else if (lastEncoderConnected !== encoderConnected) {
+        animateFeedSwap();
+        lastEncoderConnected = encoderConnected;
+      }
+      stageEl.classList.toggle("encoder-offline", !encoderConnected);
+      mapPane.classList.toggle("pane-offline-hidden", !encoderConnected);
       const cameraStale = !data || !data.cameraFresh;
       const gpsStale = !data || !data.gpsFresh || !data.ok;
-      setBrb(cameraBrb, cameraStale);
+      if (streamIsActive) {
+        setCameraSource(cameraStale ? "/loading.gif" : "/video_feed");
+      }
+      setBrb(cameraBrb, false);
       setBrb(gpsBrb, gpsStale);
       renderLock(data);
       if (!data || !data.ok || data.lat == null || data.lon == null) return;

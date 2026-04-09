@@ -160,6 +160,10 @@ app.get("/admin", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "admin.html"));
 });
 
+app.get("/loading.gif", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "loading.gif"));
+});
+
 app.get("/video_feed", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "multipart/x-mixed-replace; boundary=frame",
