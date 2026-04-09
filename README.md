@@ -59,13 +59,20 @@ docker run -d --name reciever -p 9090:9090 \
   ghcr.io/<owner>/skate-streamer-reciever:v1.0.0
 ```
 
-Encoder example (point at the receiver, pass through camera / serial as needed):
+Encoder example on **Linux** (e.g. Raspberry Pi): pass the real device nodes into the container and align env vars with them.
 
 ```bash
 docker run -d --name encoder --restart unless-stopped \
   -e MONITOR_RECEIVER_WS_URL=ws://reciever-host:9090/ingest \
+  -e MONITOR_VIDEO_DEVICE=/dev/video0 \
   --device /dev/video0 \
+  --device /dev/snd \
+  -e MONITOR_AUDIO_DEVICE=default \
   ghcr.io/<owner>/skate-streamer-encoder:v1.0.0
 ```
+
+Add more `--device` lines as needed (e.g. `/dev/ttyUSB0` or `/dev/ttyACM0` for GPS/serial) and set `MONITOR_GPS_PATH` / `MONITOR_SERIAL_PORT` accordingly. If the mic does not work, list ALSA devices on the host and set `MONITOR_AUDIO_DEVICE` to the correct capture device name.
+
+**Docker Desktop (Windows/macOS):** USB webcam and microphone passthrough into a Linux container is unreliable compared to running the encoder on a **Linux** machine (Pi or bare metal). For local dev, `npm start` on the host is often simpler than Docker.
 
 See `reciever/.env.example` for all receiver environment variables.
