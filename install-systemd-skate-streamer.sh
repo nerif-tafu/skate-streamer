@@ -133,6 +133,14 @@ fi
 # The service user must be able to write to .git (for git pull) and read the tree.
 # Clone the repo as that user, or adjust ownership (e.g. chown -R user:group "$REPO_ROOT").
 
+# Match `npm start`: Node loads reciever/.env via --env-file (systemd EnvironmentFile alone is not the same as Node's parser).
+NODE_ENVFILE_ARG=""
+if [[ -f "${RECEIVER_DIR}/.env" ]]; then
+  NODE_ENVFILE_ARG="--env-file=${RECEIVER_DIR}/.env "
+else
+  echo "Warning: no ${RECEIVER_DIR}/.env — copy reciever/.env.example to reciever/.env and re-run this script (or restart the unit after creating it)." >&2
+fi
+
 cat >"/tmp/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=Skate Streamer receiver (git pull then Node)
@@ -145,11 +153,9 @@ User=${SERVICE_USER}
 Group=$(id -gn "$SERVICE_USER")
 WorkingDirectory=${RECEIVER_DIR}
 Environment=NODE_ENV=production
-# Optional: KEY=value lines (same rules as systemd EnvironmentFile)
-EnvironmentFile=-${RECEIVER_DIR}/.env
 # Pull updates before start; leading '-' ignores failure (e.g. offline) so the service still starts
 ExecStartPre=-/usr/bin/git -C ${REPO_ROOT} pull --ff-only
-ExecStart=${NODE_BIN} ${RECEIVER_DIR}/server.js
+ExecStart=${NODE_BIN} ${NODE_ENVFILE_ARG}${RECEIVER_DIR}/server.js
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
