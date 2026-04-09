@@ -195,7 +195,20 @@
       margin-left: auto;
       min-width: 220px;
     }
+    .avsync-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 250px;
+    }
     .volume-wrap label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      white-space: nowrap;
+    }
+    .avsync-wrap label {
       font-size: 11px;
       font-weight: 700;
       text-transform: uppercase;
@@ -206,8 +219,19 @@
       width: 140px;
       accent-color: var(--fg);
     }
+    #avDelay {
+      width: 150px;
+      accent-color: var(--fg);
+    }
     #volumeValue {
       min-width: 40px;
+      text-align: right;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+    #avDelayValue {
+      min-width: 55px;
       text-align: right;
       font-size: 11px;
       font-weight: 700;
@@ -311,6 +335,11 @@
           <input id="volume" type="range" min="0" max="100" value="70" step="1">
           <span id="volumeValue">70%</span>
         </div>
+        <div class="avsync-wrap">
+          <label for="avDelay">A/V Delay</label>
+          <input id="avDelay" type="range" min="0" max="2000" value="350" step="10">
+          <span id="avDelayValue">350ms</span>
+        </div>
       </div>
       <div class="row">
         <button type="button" class="btn preset" data-preset="forward">Forward</button>
@@ -341,11 +370,18 @@
     const presetButtons = document.querySelectorAll(".preset");
     const volumeInput = document.getElementById("volume");
     const volumeValue = document.getElementById("volumeValue");
+    const avDelayInput = document.getElementById("avDelay");
+    const avDelayValue = document.getElementById("avDelayValue");
     const audioPlayer = new Audio("/audio_feed");
     audioPlayer.autoplay = true;
     audioPlayer.preload = "none";
     audioPlayer.volume = 0.7;
     audioPlayer.crossOrigin = "anonymous";
+    let audioCtx = null;
+    let mediaSource = null;
+    let delayNode = null;
+    let gainNode = null;
+    let usingWebAudio = false;
     let streamIsActive = true;
     let lastGpsPayload = null;
     let cameraSwitchTimer = null;
@@ -426,8 +462,27 @@
     }
 
     function tryStartAudio() {
+      ensureAudioGraph();
       const p = audioPlayer.play();
       if (p && typeof p.catch === "function") p.catch(() => {});
+    }
+
+    function ensureAudioGraph() {
+      if (usingWebAudio) return;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      try {
+        audioCtx = new Ctx();
+        mediaSource = audioCtx.createMediaElementSource(audioPlayer);
+        delayNode = audioCtx.createDelay(2.5);
+        gainNode = audioCtx.createGain();
+        mediaSource.connect(delayNode);
+        delayNode.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        usingWebAudio = true;
+      } catch (_) {
+        usingWebAudio = false;
+      }
     }
 
     function renderLock(data) {
@@ -503,15 +558,29 @@
 
     function setVolume(v) {
       const pct = Math.max(0, Math.min(100, Number(v) || 0));
-      audioPlayer.volume = pct / 100;
+      if (usingWebAudio && gainNode) gainNode.gain.value = pct / 100;
+      else audioPlayer.volume = pct / 100;
       volumeValue.textContent = `${pct}%`;
       localStorage.setItem("monitorVolumePct", String(pct));
     }
+    function setAvDelay(v) {
+      const ms = Math.max(0, Math.min(2000, Number(v) || 0));
+      if (usingWebAudio && delayNode) delayNode.delayTime.value = ms / 1000;
+      avDelayValue.textContent = `${ms}ms`;
+      localStorage.setItem("monitorAvDelayMs", String(ms));
+    }
     const savedVolume = Number(localStorage.getItem("monitorVolumePct") ?? "70");
+    const savedAvDelay = Number(localStorage.getItem("monitorAvDelayMs") ?? "350");
     volumeInput.value = String(Number.isFinite(savedVolume) ? Math.max(0, Math.min(100, savedVolume)) : 70);
+    avDelayInput.value = String(Number.isFinite(savedAvDelay) ? Math.max(0, Math.min(2000, savedAvDelay)) : 350);
     setVolume(volumeInput.value);
+    setAvDelay(avDelayInput.value);
     volumeInput.addEventListener("input", () => {
       setVolume(volumeInput.value);
+      tryStartAudio();
+    });
+    avDelayInput.addEventListener("input", () => {
+      setAvDelay(avDelayInput.value);
       tryStartAudio();
     });
   </script>

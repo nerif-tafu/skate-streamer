@@ -33,6 +33,7 @@ const PERF_LOG_MS = Math.max(1000, Number(process.env.MONITOR_PERF_LOG_MS ?? "20
 const FRAME_WIDTH = Number(process.env.MONITOR_FRAME_WIDTH ?? "1280");
 const FRAME_HEIGHT = Number(process.env.MONITOR_FRAME_HEIGHT ?? "720");
 const TARGET_FPS = Number(process.env.MONITOR_CAMERA_FPS ?? "15");
+const FRAME_SEND_CAP_FPS = Number(process.env.MONITOR_FRAME_SEND_CAP_FPS ?? "0");
 const JPEG_QUALITY = Math.min(100, Math.max(1, Number(process.env.MONITOR_JPEG_QUALITY ?? "75")));
 const MAX_UPSTREAM_BUFFER_BYTES = Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "262144");
 const FFMPEG_PATH = process.env.MONITOR_FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
@@ -320,7 +321,7 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 let ffmpegProc = null;
 let mjpegBuffer = Buffer.alloc(0);
 let lastFrameSentAt = 0;
-const FRAME_SEND_MS = Math.max(1, Math.round(1000 / Math.max(1, TARGET_FPS)));
+const FRAME_SEND_MS = FRAME_SEND_CAP_FPS > 0 ? Math.max(1, Math.round(1000 / Math.max(1, FRAME_SEND_CAP_FPS))) : 0;
 let lastUpstreamDropLogAt = 0;
 let ffmpegAudioProc = null;
 const audioDeviceCandidates = (() => {
@@ -334,6 +335,7 @@ const perf = {
   frameDecoded: 0,
   frameSent: 0,
   frameDropped: 0,
+  frameSkippedByCap: 0,
   frameBytesSent: 0,
   audioChunkSent: 0,
   audioBytesB64: 0,
@@ -461,22 +463,24 @@ function onMjpegChunk(chunk) {
     mjpegBuffer = mjpegBuffer.subarray(end + 2);
     perf.frameDecoded += 1;
     const now = Date.now();
-    if (now - lastFrameSentAt >= FRAME_SEND_MS) {
-      const ws = upstreamWs;
-      if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_UPSTREAM_BUFFER_BYTES) {
-        perf.frameDropped += 1;
-        if (now - lastUpstreamDropLogAt > 2000) {
-          lastUpstreamDropLogAt = now;
-          const queued = ws ? ws.bufferedAmount : 0;
-          console.warn(`Dropping frame to keep realtime latency low (upstream queue=${queued}B)`);
-        }
-        continue;
-      }
-      lastFrameSentAt = now;
-      perf.frameSent += 1;
-      perf.frameBytesSent += frame.length;
-      sendUpstreamFrame(frame);
+    if (FRAME_SEND_MS > 0 && now - lastFrameSentAt < FRAME_SEND_MS) {
+      perf.frameSkippedByCap += 1;
+      continue;
     }
+    const ws = upstreamWs;
+    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_UPSTREAM_BUFFER_BYTES) {
+      perf.frameDropped += 1;
+      if (now - lastUpstreamDropLogAt > 2000) {
+        lastUpstreamDropLogAt = now;
+        const queued = ws ? ws.bufferedAmount : 0;
+        console.warn(`Dropping frame to keep realtime latency low (upstream queue=${queued}B)`);
+      }
+      continue;
+    }
+    lastFrameSentAt = now;
+    perf.frameSent += 1;
+    perf.frameBytesSent += frame.length;
+    sendUpstreamFrame(frame);
   }
 }
 
@@ -699,13 +703,15 @@ if (PERF_LOG_ENABLED) {
     const aKbps = ((perf.audioBytesB64 * 8) / 1000) / elapsedSec;
     console.log(
       `[PERF] inFPS=${fmtRatePerSec(perf.frameDecoded, elapsedSec)} outFPS=${fmtRatePerSec(perf.frameSent, elapsedSec)} ` +
-      `dropFPS=${fmtRatePerSec(perf.frameDropped, elapsedSec)} vKbps=${vKbps.toFixed(0)} aKbps=${aKbps.toFixed(0)} ` +
+      `dropFPS=${fmtRatePerSec(perf.frameDropped, elapsedSec)} capSkipFPS=${fmtRatePerSec(perf.frameSkippedByCap, elapsedSec)} ` +
+      `vKbps=${vKbps.toFixed(0)} aKbps=${aKbps.toFixed(0)} ` +
       `gps/s=${fmtRatePerSec(perf.gpsSent, elapsedSec)} wsQ=${wsQueue}B ` +
       `cpu1=${cpuPctSingleCore.toFixed(1)}% cpuAll=${cpuPctAllCores.toFixed(1)}% load1=${load1.toFixed(2)} rss=${rssMb.toFixed(0)}MB`,
     );
     perf.frameDecoded = 0;
     perf.frameSent = 0;
     perf.frameDropped = 0;
+    perf.frameSkippedByCap = 0;
     perf.frameBytesSent = 0;
     perf.audioChunkSent = 0;
     perf.audioBytesB64 = 0;
