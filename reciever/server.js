@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
+import { mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 import express from "express";
 import { WebSocketServer } from "ws";
@@ -10,6 +12,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.MONITOR_HOST ?? "0.0.0.0";
 const PORT = Number(process.env.MONITOR_PORT ?? "9090");
 const INGEST_PATH = process.env.MONITOR_INGEST_PATH ?? "/ingest";
+const RECORDINGS_DIR = path.join(__dirname, "recordings");
+const RECORDING_FPS = Math.max(1, Number(process.env.MONITOR_RECORDING_FPS ?? "15"));
+const FFMPEG_BIN = process.env.MONITOR_FFMPEG_PATH ?? "ffmpeg";
 
 let shuttingDown = false;
 
@@ -20,6 +25,9 @@ let latestFrameTs = null;
 let latestAudioTs = null;
 let audioConfig = { sampleRate: 48000, channels: 1 };
 let streamActive = true;
+let recordingProc = null;
+let recordingName = null;
+let recordingStartedAt = null;
 const processStartedAt = Date.now();
 const gpsState = {
   ok: false,
@@ -57,6 +65,113 @@ const controlLock = {
   holder: null,
   expiresAt: 0,
 };
+
+mkdirSync(RECORDINGS_DIR, { recursive: true });
+
+function recordingPathForNow() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}-${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+  return `stream-${stamp}.mp4`;
+}
+
+function normalizeVideoName(rawName) {
+  const base = path.basename(String(rawName ?? "").trim());
+  if (!base) return null;
+  const cleaned = base.replace(/[^\w.\- ]+/g, "").trim();
+  if (!cleaned) return null;
+  const withExt = cleaned.toLowerCase().endsWith(".mp4") ? cleaned : `${cleaned}.mp4`;
+  return withExt;
+}
+
+function listRecordings({ includeActive = false } = {}) {
+  const names = readdirSync(RECORDINGS_DIR, { withFileTypes: true })
+    .filter((d) => d.isFile() && d.name.toLowerCase().endsWith(".mp4"))
+    .filter((d) => includeActive || !(recordingProc && recordingName && d.name === recordingName))
+    .map((d) => d.name);
+  const items = [];
+  for (const name of names) {
+    const fullPath = path.join(RECORDINGS_DIR, name);
+    try {
+      const s = statSync(fullPath);
+      items.push({
+        name,
+        sizeBytes: s.size,
+        createdAt: s.birthtimeMs || s.mtimeMs,
+        updatedAt: s.mtimeMs,
+        url: `/recordings/${encodeURIComponent(name)}`,
+      });
+    } catch {
+      // ignore disappearing files
+    }
+  }
+  items.sort((a, b) => b.createdAt - a.createdAt);
+  return items;
+}
+
+function startRecording() {
+  if (!streamActive || recordingProc) return;
+  const outName = recordingPathForNow();
+  const outPath = path.join(RECORDINGS_DIR, outName);
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-f",
+    "mjpeg",
+    "-framerate",
+    String(RECORDING_FPS),
+    "-i",
+    "pipe:0",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
+    "-movflags",
+    "+faststart",
+    outPath,
+  ];
+  const proc = spawn(FFMPEG_BIN, args, { stdio: ["pipe", "ignore", "pipe"] });
+  recordingProc = proc;
+  recordingName = outName;
+  recordingStartedAt = Date.now();
+  proc.stderr.on("data", (b) => {
+    const t = b.toString().trim();
+    if (t) console.error("[recording ffmpeg]", t);
+  });
+  proc.on("close", () => {
+    recordingProc = null;
+    recordingName = null;
+    recordingStartedAt = null;
+  });
+  proc.on("error", (err) => {
+    console.error("Recording process error:", err?.message ?? err);
+  });
+  console.log(`Recording started: ${outName}`);
+}
+
+function stopRecording() {
+  const proc = recordingProc;
+  if (!proc) return;
+  try {
+    proc.stdin.end();
+  } catch {
+    // ignore
+  }
+  setTimeout(() => {
+    if (!proc.killed) {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
+  }, 1500);
+}
 
 function getLockState(now = Date.now()) {
   const active = controlLock.expiresAt > now;
@@ -100,6 +215,10 @@ function adminStatsJson() {
     videoSubscribers: videoSubscribers.size,
     ...stats,
     fpsApprox,
+    recordingActive: !!recordingProc,
+    recordingName,
+    recordingStartedAt,
+    recordingsCount: listRecordings().length,
     ...base,
   };
 }
@@ -153,6 +272,7 @@ function broadcastAudioChunk(wssAudio, audioChunk) {
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/recordings", express.static(RECORDINGS_DIR));
 
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
@@ -162,8 +282,60 @@ app.get("/admin", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "admin.html"));
 });
 
-app.get("/loading.gif", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "loading.gif"));
+app.get("/videos", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "videos.html"));
+});
+
+app.get("/api/videos", (_req, res) => {
+  res.json({ ok: true, items: listRecordings() });
+});
+
+app.post("/api/videos/:name/rename", (req, res) => {
+  const oldName = normalizeVideoName(req.params?.name);
+  const nextName = normalizeVideoName(req.body?.newName);
+  if (!oldName || !nextName) {
+    return res.status(400).json({ ok: false, error: "invalid filename" });
+  }
+  if (recordingProc && recordingName && (oldName === recordingName || nextName === recordingName)) {
+    return res.status(409).json({ ok: false, error: "cannot rename active recording" });
+  }
+  const oldPath = path.join(RECORDINGS_DIR, oldName);
+  const nextPath = path.join(RECORDINGS_DIR, nextName);
+  if (oldPath === nextPath) return res.json({ ok: true, name: nextName });
+  try {
+    statSync(oldPath);
+  } catch {
+    return res.status(404).json({ ok: false, error: "video not found" });
+  }
+  try {
+    statSync(nextPath);
+    return res.status(409).json({ ok: false, error: "target name already exists" });
+  } catch {
+    // expected if destination does not exist
+  }
+  try {
+    renameSync(oldPath, nextPath);
+    return res.json({ ok: true, name: nextName });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message ?? "rename failed" });
+  }
+});
+
+app.delete("/api/videos/:name", (req, res) => {
+  const name = normalizeVideoName(req.params?.name);
+  if (!name) {
+    return res.status(400).json({ ok: false, error: "invalid filename" });
+  }
+  if (recordingProc && recordingName && name === recordingName) {
+    return res.status(409).json({ ok: false, error: "cannot delete active recording" });
+  }
+  const fullPath = path.join(RECORDINGS_DIR, name);
+  try {
+    unlinkSync(fullPath);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(404).json({ ok: false, error: err?.message ?? "delete failed" });
+  }
 });
 
 app.get("/video_feed", (req, res) => {
@@ -205,8 +377,13 @@ app.get("/api/admin/stats", (_req, res) => {
 
 app.post("/api/admin/stream", (req, res) => {
   const action = String(req.body?.action ?? "").toLowerCase();
-  if (action === "start") streamActive = true;
-  else if (action === "end" || action === "stop") streamActive = false;
+  if (action === "start") {
+    streamActive = true;
+    startRecording();
+  } else if (action === "end" || action === "stop") {
+    streamActive = false;
+    stopRecording();
+  }
   else return res.status(400).json({ ok: false, error: "action must be start or end" });
   return res.json({ ok: true, streamActive });
 });
@@ -325,6 +502,13 @@ ingestWss.on("connection", (ws) => {
         latestJpeg = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
         latestFrameTs = Date.now();
         if (streamActive) broadcastFrame(latestJpeg);
+        if (streamActive && recordingProc && !recordingProc.stdin.destroyed) {
+          try {
+            recordingProc.stdin.write(latestJpeg);
+          } catch {
+            // ignore recording write failures
+          }
+        }
       } catch {
         // ignore malformed binary frame
       }
@@ -373,6 +557,13 @@ ingestWss.on("connection", (ws) => {
         latestJpeg = Buffer.from(msg.jpegBase64, "base64");
         latestFrameTs = Number(msg.ts ?? Date.now());
         if (streamActive) broadcastFrame(latestJpeg);
+        if (streamActive && recordingProc && !recordingProc.stdin.destroyed) {
+          try {
+            recordingProc.stdin.write(latestJpeg);
+          } catch {
+            // ignore recording write failures
+          }
+        }
       } catch {
         // ignore malformed frame
       }
@@ -468,11 +659,13 @@ function shutdown() {
     }
     encoderSocket = null;
   }
+  stopRecording();
 }
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Reciever listening on http://127.0.0.1:${PORT}/`);
   console.log(`Waiting for encoder on ws://<this-host>:${PORT}${INGEST_PATH}`);
+  if (streamActive) startRecording();
 });
 
 let signalCount = 0;

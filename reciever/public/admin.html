@@ -29,14 +29,38 @@
       padding: 10px;
     }
     .wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 10px; }
+    .top {
+      border: 2px solid var(--border);
+      background: var(--bg);
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
     h1 {
       margin: 0;
-      font-size: clamp(30px, 6vw, 86px);
-      line-height: 0.88;
+      font-size: clamp(20px, 3.4vw, 34px);
+      line-height: 0.92;
       font-weight: 900;
       text-transform: uppercase;
       letter-spacing: -0.04em;
     }
+    h1 a {
+      color: inherit;
+      text-decoration: none;
+      border-bottom: 2px solid transparent;
+      font-size: inherit;
+      font-weight: inherit;
+      letter-spacing: inherit;
+      text-transform: inherit;
+      line-height: inherit;
+    }
+    h1 a[aria-current="page"] {
+      color: var(--accent);
+    }
+    h1 a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    h1 a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .card {
       background: var(--bg);
       border: 2px solid var(--border);
@@ -48,7 +72,8 @@
       gap: 10px;
     }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    button {
+    button,
+    .action-link {
       border: 2px solid var(--border);
       border-radius: 0;
       padding: 10px 13px;
@@ -59,6 +84,10 @@
       letter-spacing: 0.12em;
       font-size: 11px;
       transition: background-color 180ms ease-out, color 180ms ease-out, transform 180ms ease-out;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
     }
     .start { background: var(--fg); color: var(--bg); }
     .end { background: var(--bg); color: var(--fg); }
@@ -70,6 +99,7 @@
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     td { padding: 6px 0; border-bottom: 2px solid #000; vertical-align: top; }
     td:first-child { color: #111; width: 34%; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700; }
+    .recordings td:first-child { width: 58%; text-transform: none; letter-spacing: 0; font-weight: 500; }
     strong { text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; }
     a {
       color: var(--fg);
@@ -89,9 +119,8 @@
 </head>
 <body>
   <div class="wrap">
-    <div class="row">
-      <h1>Admin</h1>
-      <span class="muted">Manage stream and monitor runtime stats</span>
+    <div class="top">
+      <h1><a href="/">Stream</a> / <a href="/videos">Videos</a> / <a href="/admin" aria-current="page">Admin</a></h1>
     </div>
 
     <div class="card">
@@ -119,12 +148,22 @@
         </table>
       </div>
     </div>
+    <div class="card">
+      <div class="row" style="margin-bottom: 0.45rem;">
+        <strong>Recordings</strong>
+        <span class="muted">Delete or open generated videos</span>
+      </div>
+      <table class="recordings">
+        <tbody id="recordingsBody"></tbody>
+      </table>
+    </div>
 
   </div>
 
   <script>
     const toggleStreamBtn = document.getElementById("toggleStreamBtn");
     const statsBody = document.getElementById("statsBody");
+    const recordingsBody = document.getElementById("recordingsBody");
 
     function fmtMs(ms) {
       const s = Math.floor((ms || 0) / 1000);
@@ -136,6 +175,15 @@
 
     function row(name, value) {
       return `<tr><td>${name}</td><td>${value}</td></tr>`;
+    }
+
+    function fmtBytes(n) {
+      if (!Number.isFinite(n) || n < 0) return "n/a";
+      const units = ["B", "KB", "MB", "GB"];
+      let v = n;
+      let i = 0;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+      return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
     }
 
     function fixLabel(fix) {
@@ -168,6 +216,29 @@
       return j;
     }
 
+    async function fetchVideos() {
+      const r = await fetch("/api/videos");
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "Failed");
+      return Array.isArray(j.items) ? j.items : [];
+    }
+
+    async function deleteVideo(name) {
+      const r = await fetch(`/api/videos/${encodeURIComponent(name)}`, { method: "DELETE" });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "Failed");
+    }
+
+    async function renameVideo(name, newName) {
+      const r = await fetch(`/api/videos/${encodeURIComponent(name)}/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newName }),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "Failed");
+    }
+
     async function refresh() {
       try {
         const r = await fetch("/api/admin/stats");
@@ -178,6 +249,8 @@
         statsBody.innerHTML = [
           row("Uptime", fmtMs(s.uptimeMs)),
           row("Encoder", s.encoderConnected ? '<span class="ok">Connected</span>' : '<span class="bad">Disconnected</span>'),
+          row("Recording", s.recordingActive ? `<span class="ok">Active</span> ${s.recordingName ?? ""}` : '<span class="bad">Idle</span>'),
+          row("Recordings total", s.recordingsCount ?? 0),
           row("Video subscribers", s.videoSubscribers),
           row("Approx FPS", s.fpsApprox),
           row("Frames received", s.framesReceived),
@@ -219,10 +292,57 @@
           row("Updated at", s.updatedAt ? new Date(s.updatedAt).toISOString() : "n/a"),
         ].join("");
 
+        const videos = (await fetchVideos()).filter((v) => !(s.recordingActive && s.recordingName && v.name === s.recordingName));
+        recordingsBody.innerHTML = videos.length
+          ? videos.map((v) => `
+              <tr>
+                <td><a href="${v.url}" target="_blank" rel="noopener">${v.name}</a></td>
+                <td>${fmtBytes(Number(v.sizeBytes))}</td>
+                <td>
+                  <a href="${v.url}" download="${v.name}" class="action-link start">Download</a>
+                  <button type="button" class="start rename-video" data-name="${v.name}">Rename</button>
+                  <button type="button" class="end delete-video" data-name="${v.name}">Delete</button>
+                </td>
+              </tr>
+            `).join("")
+          : '<tr><td colspan="3">No recordings yet.</td></tr>';
+        recordingsBody.querySelectorAll(".rename-video").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const name = btn.getAttribute("data-name");
+            if (!name) return;
+            const proposed = prompt("Rename video to:", name);
+            if (proposed == null) return;
+            const trimmed = proposed.trim();
+            if (!trimmed) return;
+            btn.disabled = true;
+            try {
+              await renameVideo(name, trimmed);
+              await refresh();
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        });
+        recordingsBody.querySelectorAll(".delete-video").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const name = btn.getAttribute("data-name");
+            if (!name) return;
+            if (!confirm(`Delete ${name}?`)) return;
+            btn.disabled = true;
+            try {
+              await deleteVideo(name);
+              await refresh();
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        });
+
       } catch (e) {
         toggleStreamBtn.textContent = "Stream Control Error";
         toggleStreamBtn.classList.add("end");
         toggleStreamBtn.classList.remove("start");
+        recordingsBody.innerHTML = '<tr><td colspan="3">Video list unavailable.</td></tr>';
       }
     }
 

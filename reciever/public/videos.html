@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Videos</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg: #fff; --fg: #000; --muted: #f2f2f2; --accent: #ff3000; --border: #000; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 10px;
+      font-family: Inter, Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      background-image:
+        linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 10px; }
+    .top {
+      border: 2px solid var(--border);
+      background: var(--bg);
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(20px, 3.4vw, 34px);
+      line-height: 0.92;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: -0.04em;
+    }
+    h1 a {
+      color: inherit;
+      text-decoration: none;
+      border-bottom: 2px solid transparent;
+    }
+    h1 a[aria-current="page"] {
+      color: var(--accent);
+    }
+    h1 a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    h1 a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+    .card {
+      border: 2px solid var(--border);
+      background: var(--bg);
+      padding: 8px;
+      display: grid;
+      gap: 6px;
+    }
+    .meta {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: #111;
+    }
+    video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border: 2px solid var(--border);
+      display: block;
+    }
+    .empty {
+      border: 2px solid var(--border);
+      background: var(--muted);
+      padding: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 11px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1><a href="/">Stream</a> / <a href="/videos" aria-current="page">Videos</a> / <a href="/admin">Admin</a></h1>
+    </div>
+    <div id="empty" class="empty" style="display:none;">No videos recorded yet.</div>
+    <div id="list" class="grid"></div>
+  </div>
+  <script>
+    function fmtBytes(n) {
+      if (!Number.isFinite(n) || n < 0) return "n/a";
+      const units = ["B", "KB", "MB", "GB"];
+      let v = n;
+      let i = 0;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+      return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    async function refreshVideos() {
+      const list = document.getElementById("list");
+      const empty = document.getElementById("empty");
+      try {
+        const r = await fetch("/api/videos");
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || "failed");
+        const items = Array.isArray(j.items) ? j.items : [];
+        if (!items.length) {
+          list.innerHTML = "";
+          empty.style.display = "block";
+          return;
+        }
+        empty.style.display = "none";
+        list.innerHTML = items.map((v) => {
+          const when = v.createdAt ? new Date(v.createdAt).toISOString() : "n/a";
+          return `
+            <article class="card">
+              <video controls preload="metadata" src="${v.url}"></video>
+              <div class="meta">${v.name}</div>
+              <div class="meta">${when} · ${fmtBytes(Number(v.sizeBytes))}</div>
+            </article>
+          `;
+        }).join("");
+      } catch (_e) {
+        list.innerHTML = "";
+        empty.textContent = "Unable to load videos.";
+        empty.style.display = "block";
+      }
+    }
+
+    refreshVideos();
+  </script>
+</body>
+</html>
