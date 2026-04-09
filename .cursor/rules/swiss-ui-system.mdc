@@ -1,0 +1,40 @@
+---
+description: Swiss-style UI system and frontend integration workflow
+alwaysApply: true
+---
+
+# Swiss UI + Integration Rule
+
+Before proposing or writing frontend code, first model the existing stack and system:
+- Identify framework/styling stack and component architecture.
+- Reuse existing naming, patterns, and folder conventions.
+- Centralize tokens and avoid one-off styles.
+- Preserve accessibility and responsive behavior.
+
+If scope is ambiguous, ask focused questions first:
+- Is this a redesign, refactor-to-system, or new feature?
+- Which files/components are in scope?
+
+## Required Design Language (Swiss / International Typographic Style)
+- Objective, content-first communication; minimal ornament.
+- Grid-led, asymmetric layout; strict left alignment.
+- Typography as structure (Inter/Helvetica-like; strong hierarchy, uppercase labels).
+- Active negative space; visible structure and separators.
+- Flat visual depth via subtle pattern texture (grid/dots/diagonal/noise), not shadows.
+
+## Tokens (default)
+- Background `#FFFFFF`, Foreground `#000000`, Muted `#F2F2F2`, Accent `#FF3000`, Border `#000000`.
+- Rectangular geometry (`radius: 0`), visible borders (`2px+`), no drop shadows.
+- Accent red is functional (CTA/highlight/warning), used sparingly.
+
+## Components and Interaction
+- Buttons/cards/inputs are rectangular and high-contrast.
+- Hover/focus states are explicit (inversion/red accents), not subtle fades.
+- Motion is short, mechanical, purposeful (`150-200ms`), respect reduced motion.
+- Maintain AA contrast and keyboard accessibility.
+
+## Implementation Standards
+- Prefer reusable primitives and composable components.
+- Minimize duplication; extract shared tokens/utilities.
+- Explain major design/architecture choices briefly while implementing.
+- Leave code cleaner than found.

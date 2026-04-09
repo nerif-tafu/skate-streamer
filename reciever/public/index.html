@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reciever Monitor</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <style>
+    :root {
+      --bg: #FFFFFF;
+      --fg: #000000;
+      --muted: #F2F2F2;
+      --accent: #FF3000;
+      --border: #000000;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      font-family: Inter, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      position: relative;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.015;
+      background-image:
+        radial-gradient(circle at 1px 1px, #000 1px, transparent 0);
+      background-size: 16px 16px;
+    }
+    .app {
+      height: 100vh;
+      height: 100dvh;
+      padding: 10px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
+      background-image:
+        linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      border: 2px solid var(--border);
+      background: var(--bg);
+      padding: 8px 10px;
+      align-items: baseline;
+    }
+    header h1 {
+      margin: 0;
+      font-size: clamp(20px, 3.4vw, 34px);
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      text-transform: uppercase;
+      line-height: 0.92;
+    }
+    #servoStatus {
+      font-size: 11px;
+      color: var(--accent);
+      max-width: 42%;
+      text-align: right;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .stage {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 7fr 3fr;
+      gap: 10px;
+    }
+    .camera-pane, .map-pane {
+      position: relative;
+      border: 2px solid var(--border);
+      background: var(--bg);
+      overflow: hidden;
+      min-height: 0;
+    }
+    .stream {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      background: #000;
+    }
+    .map-pane {
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .map-pane .label {
+      border-bottom: 2px solid var(--border);
+      background: var(--muted);
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+    }
+    #map { min-height: 0; width: 100%; background: var(--muted); }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0;
+      border: 2px solid var(--border);
+      background: var(--bg);
+    }
+    .controls .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+    }
+    .controls .row + .row { border-top: 2px solid var(--border); }
+    .btn {
+      border: 2px solid var(--border);
+      border-radius: 0;
+      padding: 9px 12px;
+      background: var(--fg);
+      color: var(--bg);
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 11px;
+      line-height: 1;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      transition: background-color 180ms ease-out, color 180ms ease-out, transform 180ms ease-out;
+      min-height: 44px;
+    }
+    .btn:hover { background: var(--accent); color: var(--bg); transform: translateY(-1px); }
+    .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .status-chip {
+      border: 2px solid var(--border);
+      border-radius: 0;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .status-free { background: var(--muted); color: var(--fg); }
+    .status-mine { background: var(--fg); color: var(--bg); }
+    .status-locked { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .vals {
+      font-variant-numeric: tabular-nums;
+      color: #111;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-weight: 700;
+    }
+    .ended-panel {
+      display: none;
+      min-height: 0;
+      border: 4px solid var(--accent);
+      background: var(--bg);
+      align-items: center;
+      justify-content: center;
+      text-align: left;
+      padding: 20px;
+    }
+    .ended-panel h2 {
+      margin: 0 0 6px;
+      font-size: clamp(32px, 5.2vw, 82px);
+      letter-spacing: -0.04em;
+      text-transform: uppercase;
+      font-weight: 900;
+      line-height: 0.9;
+    }
+    .ended-panel p {
+      margin: 0;
+      color: #111;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      max-width: 64ch;
+    }
+    .stream-ended .stage,
+    .stream-ended .controls { display: none; }
+    .stream-ended .ended-panel { display: flex; }
+    .brb {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(28px, 4vw, 56px);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.68);
+      pointer-events: none;
+      z-index: 8;
+      text-transform: uppercase;
+    }
+    .brb.show { display: flex; }
+    .brb small {
+      display: block;
+      margin-top: 0.25rem;
+      font-size: 10px;
+      font-weight: 500;
+      opacity: 0.92;
+      letter-spacing: 0.12em;
+      text-align: center;
+    }
+    @media (max-width: 900px) {
+      .stage { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .app { padding: 6px; gap: 6px; }
+      .stage { grid-template-columns: 1fr; grid-template-rows: 1.25fr 1fr; }
+      #servoStatus { max-width: 58%; }
+      .controls .row { padding: 6px; }
+      .btn { padding: 8px 10px; min-height: 44px; flex: 1 1 calc(50% - 6px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .btn { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Camera / Map</h1>
+      <span id="servoStatus" aria-live="polite"></span>
+    </header>
+
+    <div class="stage">
+      <div class="camera-pane">
+        <img class="stream" src="/video_feed" alt="live feed" />
+        <div id="cameraBrb" class="brb">BRB<small>Camera reconnecting…</small></div>
+      </div>
+      <div class="map-pane">
+        <div class="label">GPS</div>
+        <div id="map" role="application" aria-label="Map"></div>
+        <div id="gpsBrb" class="brb">BRB<small>GPS signal missing</small></div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="row">
+        <span id="lockStatus" class="status-chip status-free">Controls free</span>
+        <span id="controlHint" class="vals">Arrow keys enabled</span>
+      </div>
+      <div class="row">
+        <button type="button" class="btn preset" data-preset="forward">Forward</button>
+        <button type="button" class="btn preset" data-preset="backward">Backward</button>
+        <button type="button" class="btn preset" data-preset="left">Left</button>
+        <button type="button" class="btn preset" data-preset="right">Right</button>
+      </div>
+    </div>
+
+    <div id="endedPanel" class="ended-panel" aria-live="polite">
+      <div>
+        <h2>Stream Ended</h2>
+        <p>Stream is offline for now — catch it again another time.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const servoStatus = document.getElementById("servoStatus");
+    const cameraBrb = document.getElementById("cameraBrb");
+    const gpsBrb = document.getElementById("gpsBrb");
+    const streamImg = document.querySelector(".stream");
+    const lockStatus = document.getElementById("lockStatus");
+    const controlHint = document.getElementById("controlHint");
+    const presetButtons = document.querySelectorAll(".preset");
+    let streamIsActive = true;
+    let lastGpsPayload = null;
+
+    let panPos = 50;
+    let tiltPos = 50;
+    const STEP = 4;
+    const PRESETS = {
+      forward: { pan: 66, tilt: 50 },
+      backward: { pan: 13, tilt: 50 },
+      left: { pan: 40, tilt: 50 },
+      right: { pan: 92, tilt: 50 },
+    };
+    const clientId = (() => {
+      const key = "monitorClientId";
+      let id = localStorage.getItem(key);
+      if (!id) {
+        id = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+        localStorage.setItem(key, id);
+      }
+      return id;
+    })();
+
+    function setBrb(el, show) {
+      el.classList.toggle("show", !!show);
+    }
+
+    function lockInfo(data) {
+      const l = data && data.controlLock ? data.controlLock : { active: false, holder: null, remainingMs: 0 };
+      const mine = l.active && l.holder === clientId;
+      const free = !l.active;
+      return { ...l, mine, free };
+    }
+
+    function setControlsEnabled(enabled) {
+      presetButtons.forEach((b) => { b.disabled = !enabled; });
+    }
+
+    function renderLock(data) {
+      const l = lockInfo(data);
+      lockStatus.classList.remove("status-free", "status-mine", "status-locked");
+      if (l.free) {
+        lockStatus.classList.add("status-free");
+        lockStatus.textContent = "Controls free";
+        setControlsEnabled(true);
+      } else if (l.mine) {
+        lockStatus.classList.add("status-mine");
+        lockStatus.textContent = `You control (${Math.ceil(l.remainingMs / 1000)}s)`;
+        setControlsEnabled(true);
+      } else {
+        lockStatus.classList.add("status-locked");
+        lockStatus.textContent = `Locked (${Math.ceil(l.remainingMs / 1000)}s)`;
+        setControlsEnabled(false);
+      }
+      controlHint.textContent = `Pan ${panPos} · Tilt ${tiltPos} · Arrow keys`;
+    }
+
+    async function sendServo(pan, tilt) {
+      try {
+        const r = await fetch("/api/servo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pan, tilt, clientId }),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          panPos = j.pan;
+          tiltPos = j.tilt;
+          servoStatus.textContent = "";
+        } else {
+          servoStatus.textContent = j.error || "Servo error";
+          if (j.lock) renderLock({ controlLock: j.lock });
+          return;
+        }
+      } catch (e) {
+        servoStatus.textContent = String(e);
+      }
+      renderLock(lastGpsPayload);
+    }
+
+    function tryMove(nextPan, nextTilt) {
+      const p = Math.max(0, Math.min(100, Math.round(nextPan)));
+      const t = Math.max(0, Math.min(100, Math.round(nextTilt)));
+      sendServo(p, t);
+    }
+
+    presetButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const preset = PRESETS[btn.dataset.preset];
+        if (!preset) return;
+        tryMove(preset.pan, preset.tilt);
+      });
+    });
+
+    window.addEventListener("keydown", (ev) => {
+      if (document.body.classList.contains("stream-ended")) return;
+      const key = ev.key;
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key)) return;
+      const l = lockInfo(lastGpsPayload);
+      if (!l.free && !l.mine) return;
+      ev.preventDefault();
+      if (key === "ArrowLeft") tryMove(panPos - STEP, tiltPos);
+      if (key === "ArrowRight") tryMove(panPos + STEP, tiltPos);
+      if (key === "ArrowUp") tryMove(panPos, tiltPos - STEP);
+      if (key === "ArrowDown") tryMove(panPos, tiltPos + STEP);
+    });
+  </script>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const DEFAULT_ACCURACY_M = 25;
+    const mapEl = document.getElementById("map");
+    const map = L.map("map", { zoomControl: true, attributionControl: true }).setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+      maxZoom: 19,
+    }).addTo(map);
+
+    let marker = null;
+    let accuracyCircle = null;
+    let didFit = false;
+
+    function ensureAccuracyCircle(ll, radiusM) {
+      const r = Number.isFinite(radiusM) && radiusM > 0 ? radiusM : DEFAULT_ACCURACY_M;
+      if (!accuracyCircle) {
+        accuracyCircle = L.circle(ll, { radius: r, color: "#3b82f6", weight: 1.5, fillColor: "#3b82f6", fillOpacity: 0.12 }).addTo(map);
+      } else {
+        accuracyCircle.setLatLng(ll);
+        accuracyCircle.setRadius(r);
+      }
+    }
+
+    function onGps(data) {
+      lastGpsPayload = data || null;
+      const active = !!(data && data.streamActive);
+      if (active !== streamIsActive) {
+        streamIsActive = active;
+        document.body.classList.toggle("stream-ended", !active);
+        if (active) streamImg.src = "/video_feed";
+        else streamImg.removeAttribute("src");
+      }
+      const cameraStale = !data || !data.cameraFresh;
+      const gpsStale = !data || !data.gpsFresh || !data.ok;
+      setBrb(cameraBrb, cameraStale);
+      setBrb(gpsBrb, gpsStale);
+      renderLock(data);
+      if (!data || !data.ok || data.lat == null || data.lon == null) return;
+      const ll = [data.lat, data.lon];
+      ensureAccuracyCircle(ll, data.accuracyM);
+      if (!marker) {
+        marker = L.circleMarker(ll, { radius: 6, color: "#fff", weight: 2, fillColor: "#3b82f6", fillOpacity: 1 }).addTo(map);
+        map.setView(ll, 17);
+        didFit = true;
+      } else {
+        marker.setLatLng(ll);
+        if (typeof marker.bringToFront === "function") marker.bringToFront();
+        if (!didFit) { map.setView(ll, 17); didFit = true; }
+      }
+    }
+
+    function invalidateMapSize() {
+      try { map.invalidateSize({ animate: false }); } catch (_) {}
+    }
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(invalidateMapSize).observe(mapEl);
+    window.addEventListener("resize", invalidateMapSize);
+    requestAnimationFrame(invalidateMapSize);
+    setTimeout(invalidateMapSize, 250);
+
+    const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+    const gpsWs = new WebSocket(wsProto + "//" + location.host + "/ws/gps");
+    gpsWs.onmessage = (ev) => { try { onGps(JSON.parse(ev.data)); invalidateMapSize(); } catch (_) {} };
+    gpsWs.onerror = () => { servoStatus.textContent = "GPS websocket error"; };
+    fetch("/api/gps").then((r) => r.json()).then((d) => { onGps(d); invalidateMapSize(); }).catch(() => {});
+  </script>
+</body>
+</html>
