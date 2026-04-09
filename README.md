@@ -40,3 +40,32 @@ Servo protocol remains:
 
 - pan: `servoA0` .. `servoA100`
 - tilt: `servoB0` .. `servoB100`
+
+## Docker / GHCR
+
+Pushing a git tag `v1.0.0` builds and pushes two images (amd64 + arm64):
+
+- `ghcr.io/<your-github-username>/skate-streamer-reciever:v1.0.0` (and `:latest`)
+- `ghcr.io/<your-github-username>/skate-streamer-encoder:v1.0.0` (and `:latest`)
+
+Receiver example (recordings on a volume at `/data`):
+
+```bash
+docker run -d --name reciever -p 9090:9090 \
+  -v skate-recordings:/data \
+  -e MONITOR_GOOGLE_CLIENT_ID="..." \
+  -e MONITOR_ADMIN_ALLOWED_EMAILS="you@example.com" \
+  -e MONITOR_RECORDINGS_DIR=/data/recordings \
+  ghcr.io/<owner>/skate-streamer-reciever:v1.0.0
+```
+
+Encoder example (point at the receiver, pass through camera / serial as needed):
+
+```bash
+docker run -d --name encoder --restart unless-stopped \
+  -e MONITOR_RECEIVER_WS_URL=ws://reciever-host:9090/ingest \
+  --device /dev/video0 \
+  ghcr.io/<owner>/skate-streamer-encoder:v1.0.0
+```
+
+See `reciever/.env.example` for all receiver environment variables.

@@ -58,6 +58,7 @@
       background: var(--bg);
       padding: 8px 10px;
       align-items: baseline;
+      flex-wrap: wrap;
     }
     header h1 {
       margin: 0;
@@ -119,6 +120,24 @@
     .camera-pane.loading-mode {
       display: grid;
       place-items: center;
+    }
+    .camera-hud {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      pointer-events: none;
+      z-index: 9;
+    }
+    .camera-hud > * {
+      pointer-events: auto;
+    }
+    .camera-pane.no-video-feed .camera-hud {
+      display: none;
     }
     .camera-pane.pane-switching-hidden,
     .map-pane.pane-switching-hidden {
@@ -218,8 +237,10 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      margin-left: auto;
       min-width: 220px;
+      border: 2px solid var(--border);
+      background: var(--bg);
+      padding: 6px 8px;
     }
     .volume-wrap label {
       font-size: 11px;
@@ -350,7 +371,12 @@
       .app { padding: 6px; gap: 6px; }
       .stage { grid-template-columns: 1fr; grid-template-rows: 1.25fr 1fr; }
       .stage.encoder-offline { grid-template-rows: 1fr; }
-      #servoStatus { max-width: 58%; }
+      header { align-items: flex-start; }
+      header h1 { font-size: clamp(18px, 7vw, 28px); }
+      #servoStatus { max-width: 100%; width: 100%; text-align: left; }
+      .ended-copy { white-space: normal; }
+      .camera-hud { left: 6px; right: 6px; bottom: 6px; flex-wrap: wrap; justify-content: flex-start; }
+      .volume-wrap { min-width: 180px; }
       .controls .row { padding: 6px; }
       .btn { padding: 8px 10px; min-height: 44px; flex: 1 1 calc(50% - 6px); }
     }
@@ -358,9 +384,19 @@
       .btn, .stream, .ended-panel { transition: none; }
       .ended-wheel { animation: none; }
     }
+    /* Until first GPS snapshot, hide stream UI to avoid live → offline flash */
+    body.stream-boot .stage,
+    body.stream-boot .controls {
+      visibility: hidden;
+    }
+    body.stream-boot .ended-panel {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
   </style>
 </head>
-<body>
+<body class="stream-boot stream-ended">
   <div class="app">
     <header>
       <h1><a href="/" aria-current="page">Stream</a> / <a href="/videos">Videos</a> / <a href="/admin">Admin</a></h1>
@@ -369,7 +405,15 @@
 
     <div class="stage">
       <div class="camera-pane">
-        <img class="stream" src="/video_feed" alt="live feed" />
+        <img class="stream" alt="live feed" decoding="async" />
+        <div class="camera-hud">
+          <button type="button" id="cameraFullscreenBtn" class="btn">Fullscreen</button>
+          <div class="volume-wrap">
+            <label for="volume">Volume</label>
+            <input id="volume" type="range" min="0" max="100" value="70" step="1">
+            <span id="volumeValue">70%</span>
+          </div>
+        </div>
         <div id="cameraBrb" class="brb">BRB<small>Camera reconnecting…</small></div>
       </div>
       <div class="map-pane">
@@ -383,11 +427,6 @@
       <div class="row">
         <span id="lockStatus" class="status-chip status-free">Controls free</span>
         <span id="controlHint" class="vals">Arrow keys enabled</span>
-        <div class="volume-wrap">
-          <label for="volume">Volume</label>
-          <input id="volume" type="range" min="0" max="100" value="70" step="1">
-          <span id="volumeValue">70%</span>
-        </div>
       </div>
       <div class="row">
         <button type="button" class="btn preset" data-preset="forward">Forward</button>
@@ -417,6 +456,7 @@
     const cameraPane = document.querySelector(".camera-pane");
     const mapPane = document.querySelector(".map-pane");
     const headerEl = document.querySelector("header");
+    const cameraFullscreenBtn = document.getElementById("cameraFullscreenBtn");
     const lockStatus = document.getElementById("lockStatus");
     const controlHint = document.getElementById("controlHint");
     const presetButtons = document.querySelectorAll(".preset");
@@ -428,8 +468,16 @@
     let audioSampleRate = 48000;
     let audioChannels = 1;
     let nextAudioTime = 0;
-    let streamIsActive = true;
+    let streamIsActive = false;
     let lastGpsPayload = null;
+    /* var: second script block reads this for boot fallback timeout */
+    var streamBootDone = false;
+
+    function finishStreamBoot() {
+      if (streamBootDone) return;
+      streamBootDone = true;
+      document.body.classList.remove("stream-boot");
+    }
     let cameraSwitchTimer = null;
     let feedSwitchTimer = null;
     let lastEncoderConnected = null;
@@ -459,14 +507,15 @@
     }
 
     function updateStageLayout() {
-      if (!stageEl || stageEl.classList.contains("encoder-offline")) {
+      const isNarrow = window.innerWidth <= 640;
+      if (!stageEl || stageEl.classList.contains("encoder-offline") || isNarrow) {
         stageEl?.style.removeProperty("grid-template-columns");
         return;
       }
       const w = stageEl.clientWidth;
       const h = stageEl.clientHeight;
       if (!w || !h) return;
-      const MIN_MAP_W = 260;
+      const MIN_MAP_W = window.innerWidth <= 900 ? 220 : 260;
       const maxCameraW = Math.max(0, w - MIN_MAP_W);
       const idealCameraW = Math.round(h * cameraAspectRatio);
       const cameraW = Math.max(0, Math.min(maxCameraW, idealCameraW));
@@ -539,6 +588,27 @@
 
     function setControlsEnabled(enabled) {
       presetButtons.forEach((b) => { b.disabled = !enabled; });
+    }
+
+    function isCameraFullscreen() {
+      return document.fullscreenElement === cameraPane;
+    }
+
+    function renderFullscreenBtn() {
+      if (!cameraFullscreenBtn) return;
+      cameraFullscreenBtn.textContent = isCameraFullscreen() ? "Exit Fullscreen" : "Fullscreen";
+    }
+
+    async function toggleCameraFullscreen() {
+      if (!cameraPane) return;
+      try {
+        if (isCameraFullscreen()) await document.exitFullscreen();
+        else await cameraPane.requestFullscreen();
+      } catch {
+        // ignore fullscreen failures (unsupported or blocked)
+      } finally {
+        renderFullscreenBtn();
+      }
     }
 
     function tryStartAudio() {
@@ -676,6 +746,13 @@
         tryMove(preset.pan, preset.tilt);
       });
     });
+    if (cameraFullscreenBtn) cameraFullscreenBtn.addEventListener("click", toggleCameraFullscreen);
+    document.addEventListener("fullscreenchange", () => {
+      renderFullscreenBtn();
+      updateStageLayout();
+      invalidateMapSize();
+    });
+    renderFullscreenBtn();
 
     window.addEventListener("keydown", (ev) => {
       if (document.body.classList.contains("stream-ended")) return;
@@ -737,7 +814,7 @@
       if (active !== streamIsActive) {
         streamIsActive = active;
         document.body.classList.toggle("stream-ended", !active);
-        if (active) setCameraSource("/video_feed");
+        if (active) setCameraSource("/video_feed", false);
         else {
           streamImg.removeAttribute("src");
           if (audioWs) {
@@ -760,12 +837,14 @@
       }
       const cameraStale = !data || !data.cameraFresh;
       const gpsStale = !data || !data.gpsFresh || !data.ok;
+      cameraPane.classList.toggle("no-video-feed", cameraStale);
       if (streamIsActive) {
         setCameraSource(cameraStale ? "/media/loading.gif" : "/video_feed");
       }
       setBrb(cameraBrb, false);
       setBrb(gpsBrb, gpsStale);
       renderLock(data);
+      finishStreamBoot();
       if (!data || !data.ok || data.lat == null || data.lon == null) return;
       const ll = [data.lat, data.lon];
       ensureAccuracyCircle(ll, data.accuracyM);
@@ -816,7 +895,18 @@
     const gpsWs = new WebSocket(wsProto + "//" + location.host + "/ws/gps");
     gpsWs.onmessage = (ev) => { try { onGps(JSON.parse(ev.data)); invalidateMapSize(); } catch (_) {} };
     gpsWs.onerror = () => { servoStatus.textContent = "GPS websocket error"; };
-    fetch("/api/gps").then((r) => r.json()).then((d) => { onGps(d); invalidateMapSize(); }).catch(() => {});
+    fetch("/api/gps")
+      .then((r) => r.json())
+      .then((d) => {
+        onGps(d);
+        invalidateMapSize();
+      })
+      .catch(() => {
+        finishStreamBoot();
+      });
+    setTimeout(() => {
+      if (!streamBootDone) finishStreamBoot();
+    }, 4000);
     tryStartAudio();
   </script>
 </body>

@@ -31,6 +31,7 @@
       justify-content: space-between;
       align-items: baseline;
       gap: 8px;
+      flex-wrap: wrap;
     }
     h1 {
       margin: 0;
@@ -50,7 +51,7 @@
     }
     h1 a:hover { color: var(--accent); border-bottom-color: var(--accent); }
     h1 a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+    .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
     .card {
       border: 2px solid var(--border);
       background: var(--bg);
@@ -80,6 +81,12 @@
       letter-spacing: 0.12em;
       font-size: 11px;
       font-weight: 700;
+    }
+    @media (max-width: 640px) {
+      body { padding: 6px; }
+      .top { align-items: flex-start; }
+      h1 { font-size: clamp(18px, 7vw, 28px); }
+      .grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>

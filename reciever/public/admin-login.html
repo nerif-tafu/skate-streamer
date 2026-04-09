@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin Login</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg: #fff; --fg: #000; --muted: #f2f2f2; --accent: #ff3000; --border: #000; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      padding: 10px;
+      font-family: Inter, Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      display: grid;
+      place-items: center;
+      background-image:
+        linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    .card {
+      width: min(560px, 100%);
+      border: 2px solid var(--border);
+      background: var(--bg);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 5vw, 44px);
+      line-height: 0.92;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: -0.04em;
+    }
+    p {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #222;
+    }
+    #error {
+      min-height: 18px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    a {
+      color: var(--fg);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 700;
+      text-underline-offset: 3px;
+      font-size: 11px;
+    }
+  </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <main class="card">
+    <h1>Admin Login</h1>
+    <p>Only configured allowlist Google accounts are allowed.</p>
+    <div id="g_id_onload"
+      data-client_id=""
+      data-callback="onGoogleCredentialResponse"
+      data-auto_prompt="false"></div>
+    <div class="g_id_signin"
+      data-type="standard"
+      data-theme="outline"
+      data-size="large"
+      data-shape="rectangular"
+      data-text="signin_with"
+      data-logo_alignment="left"></div>
+    <div id="error"></div>
+    <a href="/">Back to Stream</a>
+  </main>
+  <script>
+    const onload = document.getElementById("g_id_onload");
+    const errorEl = document.getElementById("error");
+    if (onload && !onload.getAttribute("data-client_id")) {
+      errorEl.textContent = "Google client ID is not configured on server.";
+    }
+
+    async function onGoogleCredentialResponse(resp) {
+      const idToken = resp && resp.credential ? String(resp.credential) : "";
+      if (!idToken) {
+        errorEl.textContent = "Google sign-in failed.";
+        return;
+      }
+      try {
+        const r = await fetch("/api/admin/auth/google", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idToken }),
+        });
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || "Login failed");
+        location.href = "/admin";
+      } catch (e) {
+        errorEl.textContent = String(e.message || e);
+      }
+    }
+    window.onGoogleCredentialResponse = onGoogleCredentialResponse;
+  </script>
+</body>
+</html>

@@ -37,6 +37,7 @@
       justify-content: space-between;
       align-items: baseline;
       gap: 8px;
+      flex-wrap: wrap;
     }
     h1 {
       margin: 0;
@@ -96,10 +97,78 @@
     .muted { color: #222; font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; }
     .ok { color: #000; background: #F2F2F2; border: 2px solid #000; padding: 1px 6px; text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; }
     .bad { color: #fff; background: var(--accent); border: 2px solid var(--accent); padding: 1px 6px; text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; }
+    .table-wrap { width: 100%; overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     td { padding: 6px 0; border-bottom: 2px solid #000; vertical-align: top; }
     td:first-child { color: #111; width: 34%; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700; }
-    .recordings td:first-child { width: 58%; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .recordings {
+      table-layout: fixed;
+    }
+    .recordings td {
+      vertical-align: middle;
+      padding: 10px 12px 10px 0;
+      border-bottom: 2px solid var(--border);
+    }
+    .recordings td:first-child {
+      width: 50%;
+      min-width: 0;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 500;
+      padding-left: 0;
+    }
+    .recordings td.recording-size {
+      width: 11%;
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--fg);
+    }
+    .recordings td.recording-actions {
+      width: 39%;
+      padding-right: 0;
+    }
+    .recordings .recording-main {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .recordings a.recording-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      align-self: center;
+      line-height: 1.3;
+      word-break: break-word;
+      hyphens: auto;
+    }
+    .recordings .recording-actions-inner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .recordings-wrap {
+      max-height: min(46dvh, 420px);
+      overflow-y: auto;
+      border: 2px solid var(--border);
+    }
+    .recordings-wrap table { border-top: 0; }
+    .recording-thumb {
+      width: 112px;
+      flex: 0 0 auto;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      border: 2px solid var(--border);
+      background: #000;
+      display: block;
+    }
     strong { text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; }
     a {
       color: var(--fg);
@@ -112,6 +181,40 @@
     @media (max-width: 900px) {
       .stats-grid { grid-template-columns: 1fr; }
     }
+    @media (max-width: 640px) {
+      body { padding: 6px; }
+      .top { align-items: flex-start; }
+      h1 { font-size: clamp(18px, 7vw, 28px); }
+      .recordings { table-layout: auto; }
+      .recordings td {
+        border-bottom: none;
+      }
+      .recordings td:first-child,
+      .recordings td.recording-size,
+      .recordings td.recording-actions {
+        display: block;
+        width: 100% !important;
+        text-align: left;
+        padding: 6px 0 0;
+      }
+      .recordings tr {
+        display: block;
+        border-bottom: 2px solid var(--border);
+        padding: 10px 0 12px;
+        margin: 0;
+      }
+      .recordings td:first-child { padding-top: 0; }
+      .recordings .recording-actions-inner {
+        justify-content: flex-start;
+      }
+      .recordings .recording-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .recording-thumb { width: 100%; max-width: 200px; }
+      button, .action-link { min-height: 40px; padding: 8px 10px; }
+    }
     @media (prefers-reduced-motion: reduce) {
       button { transition: none; }
     }
@@ -121,6 +224,7 @@
   <div class="wrap">
     <div class="top">
       <h1><a href="/">Stream</a> / <a href="/videos">Videos</a> / <a href="/admin" aria-current="page">Admin</a></h1>
+      <button id="logoutBtn" type="button" class="end">Logout</button>
     </div>
 
     <div class="card">
@@ -134,36 +238,41 @@
         <div class="row" style="margin-bottom: 0.45rem;">
           <strong>Stream Stats</strong>
         </div>
-        <table>
+        <div class="table-wrap"><table>
           <tbody id="statsBody"></tbody>
-        </table>
+        </table></div>
       </div>
       <div class="card">
         <div class="row" style="margin-bottom: 0.45rem;">
           <strong>GPS Diagnostics</strong>
           <span class="muted">cgps-style detail from current feed</span>
         </div>
-        <table>
+        <div class="table-wrap"><table>
           <tbody id="gpsBody"></tbody>
-        </table>
+        </table></div>
       </div>
     </div>
     <div class="card">
       <div class="row" style="margin-bottom: 0.45rem;">
         <strong>Recordings</strong>
-        <span class="muted">Delete or open generated videos</span>
       </div>
-      <table class="recordings">
+      <div class="table-wrap recordings-wrap"><table class="recordings">
         <tbody id="recordingsBody"></tbody>
-      </table>
+      </table></div>
     </div>
 
   </div>
 
   <script>
     const toggleStreamBtn = document.getElementById("toggleStreamBtn");
+    const logoutBtn = document.getElementById("logoutBtn");
     const statsBody = document.getElementById("statsBody");
+    const gpsBody = document.getElementById("gpsBody");
     const recordingsBody = document.getElementById("recordingsBody");
+
+    let lastRecordingsSig = null;
+    let adminWs = null;
+    let reconnectTimer = null;
 
     function fmtMs(ms) {
       const s = Math.floor((ms || 0) / 1000);
@@ -211,20 +320,21 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
+      if (r.status === 401) {
+        location.href = "/admin/login";
+        return { ok: false };
+      }
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "Failed");
       return j;
     }
 
-    async function fetchVideos() {
-      const r = await fetch("/api/videos");
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error || "Failed");
-      return Array.isArray(j.items) ? j.items : [];
-    }
-
     async function deleteVideo(name) {
       const r = await fetch(`/api/videos/${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (r.status === 401) {
+        location.href = "/admin/login";
+        return;
+      }
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "Failed");
     }
@@ -235,124 +345,215 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ newName }),
       });
+      if (r.status === 401) {
+        location.href = "/admin/login";
+        return;
+      }
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "Failed");
     }
 
-    async function refresh() {
-      try {
-        const r = await fetch("/api/admin/stats");
-        const s = await r.json();
-        toggleStreamBtn.textContent = s.streamActive ? "End Live Stream" : "Start Live Stream";
-        toggleStreamBtn.classList.toggle("start", s.streamActive);
-        toggleStreamBtn.classList.toggle("end", !s.streamActive);
-        statsBody.innerHTML = [
-          row("Uptime", fmtMs(s.uptimeMs)),
-          row("Encoder", s.encoderConnected ? '<span class="ok">Connected</span>' : '<span class="bad">Disconnected</span>'),
-          row("Recording", s.recordingActive ? `<span class="ok">Active</span> ${s.recordingName ?? ""}` : '<span class="bad">Idle</span>'),
-          row("Recordings total", s.recordingsCount ?? 0),
-          row("Video subscribers", s.videoSubscribers),
-          row("Approx FPS", s.fpsApprox),
-          row("Frames received", s.framesReceived),
-          row("GPS updates", s.gpsUpdates),
-          row("GPS fresh", s.gpsFresh ? '<span class="ok">Yes</span>' : '<span class="bad">No</span>'),
-          row("Camera fresh", s.cameraFresh ? '<span class="ok">Yes</span>' : '<span class="bad">No</span>'),
-          row("Servo requests", s.servoRequests),
-          row("Servo ACK ok", s.servoAcksOk),
-          row("Servo ACK errors", s.servoAcksErr),
-          row("Encoder connects", s.encoderConnects),
-          row("Encoder disconnects", s.encoderDisconnects),
-          row("Last frame age", s.frameAgeMs == null ? "n/a" : `${s.frameAgeMs} ms`),
-          row("Last GPS age", s.gpsAgeMs == null ? "n/a" : `${s.gpsAgeMs} ms`),
-        ].join("");
+    function applyDashboard(s) {
+      toggleStreamBtn.textContent = s.streamActive ? "End Live Stream" : "Start Live Stream";
+      toggleStreamBtn.classList.toggle("start", s.streamActive);
+      toggleStreamBtn.classList.toggle("end", !s.streamActive);
+      statsBody.innerHTML = [
+        row("Uptime", fmtMs(s.uptimeMs)),
+        row("Encoder", s.encoderConnected ? '<span class="ok">Connected</span>' : '<span class="bad">Disconnected</span>'),
+        row("Recording", s.recordingActive ? `<span class="ok">Active</span> ${s.recordingName ?? ""}` : '<span class="bad">Idle</span>'),
+        row("Recordings total", s.recordingsCount ?? 0),
+        row("Video subscribers", s.videoSubscribers),
+        row("Approx FPS", s.fpsApprox),
+        row("Frames received", s.framesReceived),
+        row("GPS updates", s.gpsUpdates),
+        row("GPS fresh", s.gpsFresh ? '<span class="ok">Yes</span>' : '<span class="bad">No</span>'),
+        row("Camera fresh", s.cameraFresh ? '<span class="ok">Yes</span>' : '<span class="bad">No</span>'),
+        row("Servo requests", s.servoRequests),
+        row("Servo ACK ok", s.servoAcksOk),
+        row("Servo ACK errors", s.servoAcksErr),
+        row("Encoder connects", s.encoderConnects),
+        row("Encoder disconnects", s.encoderDisconnects),
+        row("Last frame age", s.frameAgeMs == null ? "n/a" : `${s.frameAgeMs} ms`),
+        row("Last GPS age", s.gpsAgeMs == null ? "n/a" : `${s.gpsAgeMs} ms`),
+      ].join("");
 
-        const gpsBody = document.getElementById("gpsBody");
-        gpsBody.innerHTML = [
-          row("Fix mode", fixLabel(s.fix)),
-          row("GPS source UTC", s.utc || "n/a"),
-          row("Lat / Lon (decimal)", s.lat != null && s.lon != null ? `${Number(s.lat).toFixed(7)}, ${Number(s.lon).toFixed(7)}` : "n/a"),
-          row("Latitude (DMS)", s.lat != null ? toDms(Number(s.lat), true) : "n/a"),
-          row("Longitude (DMS)", s.lon != null ? toDms(Number(s.lon), false) : "n/a"),
-          row("Altitude", s.alt != null ? `${Number(s.alt).toFixed(2)} m` : "n/a"),
-          row("Speed", s.speedKmh != null ? `${Number(s.speedKmh).toFixed(2)} km/h` : "n/a"),
-          row("Track / Course", s.course != null ? `${Number(s.course).toFixed(2)}°` : "n/a"),
-          row("Mag Track / Var", (s.magtrack != null || s.magvar != null) ? `${s.magtrack ?? "n/a"}° / ${s.magvar ?? "n/a"}°` : "n/a"),
-          row("Satellites", s.satellites ?? "n/a"),
-          row("nSat / uSat", (s.nSat != null || s.uSat != null) ? `${s.nSat ?? "n/a"} / ${s.uSat ?? "n/a"}` : "n/a"),
-          row("HDOP", s.hdop != null ? Number(s.hdop).toFixed(2) : "n/a"),
-          row("PDOP / VDOP / TDOP / GDOP", (s.pdop != null || s.vdop != null || s.tdop != null || s.gdop != null)
-            ? `${s.pdop ?? "n/a"} / ${s.vdop ?? "n/a"} / ${s.tdop ?? "n/a"} / ${s.gdop ?? "n/a"}`
-            : "n/a"),
-          row("Estimated accuracy", s.accuracyM != null ? `±${Number(s.accuracyM).toFixed(1)} m` : "n/a"),
-          row("EPH / EPV / SEP / EPS", (s.eph != null || s.epv != null || s.sep != null || s.eps != null)
-            ? `${s.eph ?? "n/a"} / ${s.epv ?? "n/a"} / ${s.sep ?? "n/a"} / ${s.eps ?? "n/a"}`
-            : "n/a"),
-          row("NMEA UTC time", s.time || "n/a"),
-          row("NMEA UTC date", s.date || "n/a"),
-          row("Updated at", s.updatedAt ? new Date(s.updatedAt).toISOString() : "n/a"),
-        ].join("");
+      gpsBody.innerHTML = [
+        row("Fix mode", fixLabel(s.fix)),
+        row("GPS source UTC", s.utc || "n/a"),
+        row("Lat / Lon (decimal)", s.lat != null && s.lon != null ? `${Number(s.lat).toFixed(7)}, ${Number(s.lon).toFixed(7)}` : "n/a"),
+        row("Latitude (DMS)", s.lat != null ? toDms(Number(s.lat), true) : "n/a"),
+        row("Longitude (DMS)", s.lon != null ? toDms(Number(s.lon), false) : "n/a"),
+        row("Altitude", s.alt != null ? `${Number(s.alt).toFixed(2)} m` : "n/a"),
+        row("Speed", s.speedKmh != null ? `${Number(s.speedKmh).toFixed(2)} km/h` : "n/a"),
+        row("Track / Course", s.course != null ? `${Number(s.course).toFixed(2)}°` : "n/a"),
+        row("Mag Track / Var", (s.magtrack != null || s.magvar != null) ? `${s.magtrack ?? "n/a"}° / ${s.magvar ?? "n/a"}°` : "n/a"),
+        row("Satellites", s.satellites ?? "n/a"),
+        row("nSat / uSat", (s.nSat != null || s.uSat != null) ? `${s.nSat ?? "n/a"} / ${s.uSat ?? "n/a"}` : "n/a"),
+        row("HDOP", s.hdop != null ? Number(s.hdop).toFixed(2) : "n/a"),
+        row("PDOP / VDOP / TDOP / GDOP", (s.pdop != null || s.vdop != null || s.tdop != null || s.gdop != null)
+          ? `${s.pdop ?? "n/a"} / ${s.vdop ?? "n/a"} / ${s.tdop ?? "n/a"} / ${s.gdop ?? "n/a"}`
+          : "n/a"),
+        row("Estimated accuracy", s.accuracyM != null ? `±${Number(s.accuracyM).toFixed(1)} m` : "n/a"),
+        row("EPH / EPV / SEP / EPS", (s.eph != null || s.epv != null || s.sep != null || s.eps != null)
+          ? `${s.eph ?? "n/a"} / ${s.epv ?? "n/a"} / ${s.sep ?? "n/a"} / ${s.eps ?? "n/a"}`
+          : "n/a"),
+        row("NMEA UTC time", s.time || "n/a"),
+        row("NMEA UTC date", s.date || "n/a"),
+        row("Updated at", s.updatedAt ? new Date(s.updatedAt).toISOString() : "n/a"),
+      ].join("");
+    }
 
-        const videos = (await fetchVideos()).filter((v) => !(s.recordingActive && s.recordingName && v.name === s.recordingName));
-        recordingsBody.innerHTML = videos.length
-          ? videos.map((v) => `
+    function wireRecordingButtons() {
+      recordingsBody.querySelectorAll(".rename-video").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.getAttribute("data-name");
+          if (!name) return;
+          const proposed = prompt("Rename video to:", name);
+          if (proposed == null) return;
+          const trimmed = proposed.trim();
+          if (!trimmed) return;
+          btn.disabled = true;
+          try {
+            await renameVideo(name, trimmed);
+            await pullAdminOnce();
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+      recordingsBody.querySelectorAll(".delete-video").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.getAttribute("data-name");
+          if (!name) return;
+          if (!confirm(`Delete ${name}?`)) return;
+          btn.disabled = true;
+          try {
+            await deleteVideo(name);
+            await pullAdminOnce();
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    function renderRecordings(videos) {
+      if (!videos.length) {
+        recordingsBody.innerHTML = '<tr><td colspan="3">No recordings yet.</td></tr>';
+        return;
+      }
+      recordingsBody.innerHTML = videos.map((v) => `
               <tr>
-                <td><a href="${v.url}" target="_blank" rel="noopener">${v.name}</a></td>
-                <td>${fmtBytes(Number(v.sizeBytes))}</td>
                 <td>
-                  <a href="${v.url}" download="${v.name}" class="action-link start">Download</a>
-                  <button type="button" class="start rename-video" data-name="${v.name}">Rename</button>
-                  <button type="button" class="end delete-video" data-name="${v.name}">Delete</button>
+                  <div class="recording-main">
+                    <video class="recording-thumb" muted preload="metadata" src="${v.url}"></video>
+                    <a class="recording-title" href="${v.url}" target="_blank" rel="noopener">${v.name}</a>
+                  </div>
+                </td>
+                <td class="recording-size">${fmtBytes(Number(v.sizeBytes))}</td>
+                <td class="recording-actions">
+                  <div class="recording-actions-inner">
+                    <a href="${v.url}" download="${v.name}" class="action-link start">Download</a>
+                    <button type="button" class="start rename-video" data-name="${v.name}">Rename</button>
+                    <button type="button" class="end delete-video" data-name="${v.name}">Delete</button>
+                  </div>
                 </td>
               </tr>
-            `).join("")
-          : '<tr><td colspan="3">No recordings yet.</td></tr>';
-        recordingsBody.querySelectorAll(".rename-video").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const name = btn.getAttribute("data-name");
-            if (!name) return;
-            const proposed = prompt("Rename video to:", name);
-            if (proposed == null) return;
-            const trimmed = proposed.trim();
-            if (!trimmed) return;
-            btn.disabled = true;
-            try {
-              await renameVideo(name, trimmed);
-              await refresh();
-            } finally {
-              btn.disabled = false;
-            }
-          });
-        });
-        recordingsBody.querySelectorAll(".delete-video").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const name = btn.getAttribute("data-name");
-            if (!name) return;
-            if (!confirm(`Delete ${name}?`)) return;
-            btn.disabled = true;
-            try {
-              await deleteVideo(name);
-              await refresh();
-            } finally {
-              btn.disabled = false;
-            }
-          });
-        });
+            `).join("");
+      wireRecordingButtons();
+    }
 
-      } catch (e) {
+    function onAdminPayload(s) {
+      applyDashboard(s);
+      const sig = s.recordingsSig ?? "";
+      if (sig !== lastRecordingsSig) {
+        lastRecordingsSig = sig;
+        renderRecordings(Array.isArray(s.recordings) ? s.recordings : []);
+      }
+    }
+
+    async function pullAdminOnce() {
+      const r = await fetch("/api/admin/stats");
+      if (r.status === 401) {
+        location.href = "/admin/login";
+        return;
+      }
+      if (!r.ok) return;
+      const s = await r.json();
+      onAdminPayload(s);
+    }
+
+    function connectAdminWs() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (adminWs && adminWs.readyState === WebSocket.OPEN) return;
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      adminWs = new WebSocket(`${proto}//${location.host}/ws/admin`);
+      adminWs.addEventListener("message", (ev) => {
+        try {
+          const s = JSON.parse(ev.data);
+          onAdminPayload(s);
+        } catch (_) {}
+      });
+      adminWs.addEventListener("close", async () => {
+        adminWs = null;
+        try {
+          const r = await fetch("/api/admin/stats");
+          if (r.status === 401) {
+            location.href = "/admin/login";
+            return;
+          }
+        } catch (_) {}
+        reconnectTimer = setTimeout(connectAdminWs, 2000);
+      });
+    }
+
+    async function boot() {
+      try {
+        const r = await fetch("/api/admin/stats");
+        if (r.status === 401) {
+          location.href = "/admin/login";
+          return;
+        }
+        if (!r.ok) throw new Error("stats failed");
+        const s = await r.json();
+        onAdminPayload(s);
+      } catch {
         toggleStreamBtn.textContent = "Stream Control Error";
         toggleStreamBtn.classList.add("end");
         toggleStreamBtn.classList.remove("start");
         recordingsBody.innerHTML = '<tr><td colspan="3">Video list unavailable.</td></tr>';
+        return;
       }
+      connectAdminWs();
     }
 
     toggleStreamBtn.addEventListener("click", async () => {
       const shouldEnd = toggleStreamBtn.textContent.toLowerCase().includes("end");
-      try { await setStream(shouldEnd ? "end" : "start"); } finally { refresh(); }
+      try {
+        const j = await setStream(shouldEnd ? "end" : "start");
+        if (j && typeof j.streamActive === "boolean") {
+          toggleStreamBtn.textContent = j.streamActive ? "End Live Stream" : "Start Live Stream";
+          toggleStreamBtn.classList.toggle("start", j.streamActive);
+          toggleStreamBtn.classList.toggle("end", !j.streamActive);
+        }
+        await pullAdminOnce();
+      } catch {
+        toggleStreamBtn.textContent = "Stream Control Error";
+        toggleStreamBtn.classList.add("end");
+        toggleStreamBtn.classList.remove("start");
+      }
+    });
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await fetch("/api/admin/logout", { method: "POST" });
+      } catch (_) {}
+      location.href = "/admin/login";
     });
 
-    refresh();
-    setInterval(refresh, 1000);
+    boot();
   </script>
 </body>
 </html>

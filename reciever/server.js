@@ -1,20 +1,31 @@
 import { createServer } from "node:http";
-import { mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 
 import express from "express";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const HOST = process.env.MONITOR_HOST ?? "0.0.0.0";
 const PORT = Number(process.env.MONITOR_PORT ?? "9090");
 const INGEST_PATH = process.env.MONITOR_INGEST_PATH ?? "/ingest";
-const RECORDINGS_DIR = path.join(__dirname, "recordings");
+const RECORDINGS_DIR = process.env.MONITOR_RECORDINGS_DIR
+  ? path.resolve(process.env.MONITOR_RECORDINGS_DIR)
+  : path.join(__dirname, "recordings");
 const RECORDING_FPS = Math.max(1, Number(process.env.MONITOR_RECORDING_FPS ?? "15"));
 const FFMPEG_BIN = process.env.MONITOR_FFMPEG_PATH ?? "ffmpeg";
+const ADMIN_ALLOWED_EMAILS = new Set(
+  String(process.env.MONITOR_ADMIN_ALLOWED_EMAILS ?? "xmicroninjax@gmail.com")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+const ADMIN_SESSION_TTL_MS = Number(process.env.MONITOR_ADMIN_SESSION_TTL_MS ?? String(12 * 60 * 60 * 1000));
+const GOOGLE_CLIENT_ID = String(process.env.MONITOR_GOOGLE_CLIENT_ID ?? "").trim();
 
 let shuttingDown = false;
 
@@ -24,10 +35,11 @@ let latestJpeg = null;
 let latestFrameTs = null;
 let latestAudioTs = null;
 let audioConfig = { sampleRate: 48000, channels: 1 };
-let streamActive = true;
+let streamActive = false;
 let recordingProc = null;
 let recordingName = null;
 let recordingStartedAt = null;
+const adminSessions = new Map();
 const processStartedAt = Date.now();
 const gpsState = {
   ok: false,
@@ -173,6 +185,50 @@ function stopRecording() {
   }, 1500);
 }
 
+function parseCookies(req) {
+  const out = {};
+  const raw = String(req.headers?.cookie ?? "");
+  if (!raw) return out;
+  for (const part of raw.split(";")) {
+    const i = part.indexOf("=");
+    if (i <= 0) continue;
+    const key = part.slice(0, i).trim();
+    const val = part.slice(i + 1).trim();
+    if (!key) continue;
+    out[key] = decodeURIComponent(val);
+  }
+  return out;
+}
+
+function sessionCookieValue(req) {
+  return parseCookies(req).admin_session ?? "";
+}
+
+function isAdminSessionValid(req) {
+  const token = sessionCookieValue(req);
+  if (!token) return false;
+  const exp = adminSessions.get(token);
+  if (!exp || exp < Date.now()) {
+    if (exp) adminSessions.delete(token);
+    return false;
+  }
+  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
+  return true;
+}
+
+function issueAdminSession(res) {
+  const token = crypto.randomBytes(32).toString("hex");
+  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
+  const maxAgeSec = Math.floor(ADMIN_SESSION_TTL_MS / 1000);
+  res.setHeader("Set-Cookie", `admin_session=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}`);
+}
+
+function clearAdminSession(req, res) {
+  const token = sessionCookieValue(req);
+  if (token) adminSessions.delete(token);
+  res.setHeader("Set-Cookie", "admin_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
+}
+
 function getLockState(now = Date.now()) {
   const active = controlLock.expiresAt > now;
   return {
@@ -206,6 +262,8 @@ function gpsJson() {
 }
 
 function adminStatsJson() {
+  const recordings = listRecordings();
+  const recordingsSig = recordings.map((r) => `${r.name}:${r.sizeBytes}`).join("|");
   const base = gpsJson();
   const upMs = Date.now() - processStartedAt;
   const fpsApprox = base.frameAgeMs != null && base.frameAgeMs <= 2000 ? Math.max(0, Math.round(1000 / Math.max(base.frameAgeMs, 1))) : 0;
@@ -218,7 +276,9 @@ function adminStatsJson() {
     recordingActive: !!recordingProc,
     recordingName,
     recordingStartedAt,
-    recordingsCount: listRecordings().length,
+    recordingsCount: recordings.length,
+    recordings,
+    recordingsSig,
     ...base,
   };
 }
@@ -279,7 +339,21 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/admin", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "admin.html"));
+  if (!isAdminSessionValid(_req)) return res.redirect(302, "/admin/login");
+  return res.sendFile(path.join(__dirname, "public", "admin.html"));
+});
+
+app.get("/admin/login", (_req, res) => {
+  if (isAdminSessionValid(_req)) return res.redirect(302, "/admin");
+  const tplPath = path.join(__dirname, "public", "admin-login.html");
+  let html = "";
+  try {
+    html = readFileSync(tplPath, "utf8");
+  } catch {
+    return res.status(500).send("Admin login page unavailable.");
+  }
+  html = html.replace('data-client_id=""', `data-client_id="${GOOGLE_CLIENT_ID}"`);
+  return res.type("html").send(html);
 });
 
 app.get("/videos", (_req, res) => {
@@ -291,6 +365,7 @@ app.get("/api/videos", (_req, res) => {
 });
 
 app.post("/api/videos/:name/rename", (req, res) => {
+  if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   const oldName = normalizeVideoName(req.params?.name);
   const nextName = normalizeVideoName(req.body?.newName);
   if (!oldName || !nextName) {
@@ -322,6 +397,7 @@ app.post("/api/videos/:name/rename", (req, res) => {
 });
 
 app.delete("/api/videos/:name", (req, res) => {
+  if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   const name = normalizeVideoName(req.params?.name);
   if (!name) {
     return res.status(400).json({ ok: false, error: "invalid filename" });
@@ -372,10 +448,12 @@ app.get("/api/gps", (_req, res) => {
 });
 
 app.get("/api/admin/stats", (_req, res) => {
+  if (!isAdminSessionValid(_req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   res.json(adminStatsJson());
 });
 
 app.post("/api/admin/stream", (req, res) => {
+  if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   const action = String(req.body?.action ?? "").toLowerCase();
   if (action === "start") {
     streamActive = true;
@@ -386,6 +464,30 @@ app.post("/api/admin/stream", (req, res) => {
   }
   else return res.status(400).json({ ok: false, error: "action must be start or end" });
   return res.json({ ok: true, streamActive });
+});
+
+app.post("/api/admin/auth/google", async (req, res) => {
+  const idToken = String(req.body?.idToken ?? "").trim();
+  if (!idToken) return res.status(400).json({ ok: false, error: "idToken required" });
+  try {
+    const r = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+    if (!r.ok) return res.status(401).json({ ok: false, error: "invalid google token" });
+    const info = await r.json();
+    const email = String(info?.email ?? "").toLowerCase();
+    const verified = String(info?.email_verified ?? "").toLowerCase() === "true";
+    if (!verified || !ADMIN_ALLOWED_EMAILS.has(email)) {
+      return res.status(403).json({ ok: false, error: "google account not allowed" });
+    }
+    issueAdminSession(res);
+    return res.json({ ok: true, email });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message ?? "auth failed" });
+  }
+});
+
+app.post("/api/admin/logout", (req, res) => {
+  clearAdminSession(req, res);
+  res.json({ ok: true });
 });
 
 app.post("/api/servo", async (req, res) => {
@@ -457,9 +559,41 @@ const audioWss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
 });
+const adminWss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false,
+});
+
+adminWss.on("connection", (ws) => {
+  const tick = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify(adminStatsJson()));
+    } catch {
+      // ignore
+    }
+  }, 1000);
+  ws.on("close", () => clearInterval(tick));
+});
 
 httpServer.on("upgrade", (req, socket, head) => {
   const url = req.url || "";
+  const pathOnly = url.split("?")[0] || "";
+  if (pathOnly === "/ws/admin") {
+    if (!isAdminSessionValid(req)) {
+      try {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      } catch {
+        // ignore
+      }
+      socket.destroy();
+      return;
+    }
+    adminWss.handleUpgrade(req, socket, head, (ws) => {
+      adminWss.emit("connection", ws, req);
+    });
+    return;
+  }
   if (url === INGEST_PATH) {
     ingestWss.handleUpgrade(req, socket, head, (ws) => {
       ingestWss.emit("connection", ws, req);
