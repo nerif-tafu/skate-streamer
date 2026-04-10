@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -62,7 +62,11 @@ const gpsState = {
 let servoReqId = 0;
 const pendingServoAcks = new Map();
 const videoSubscribers = new Set();
-const MAX_SUBSCRIBER_BUFFER_BYTES = Number(process.env.MONITOR_SUBSCRIBER_MAX_BUFFER_BYTES ?? "524288");
+/** Cap Node write buffer per viewer; lower = less backlog on slow/long-RTT links (more dropped frames). */
+const MAX_SUBSCRIBER_BUFFER_BYTES = Math.max(
+  8192,
+  Number(process.env.MONITOR_SUBSCRIBER_MAX_BUFFER_BYTES ?? "98304"),
+);
 const CAMERA_STALE_MS = Number(process.env.MONITOR_CAMERA_STALE_MS ?? "2500");
 const GPS_STALE_MS = Number(process.env.MONITOR_GPS_STALE_MS ?? "4500");
 const CONTROL_LOCK_MS = Number(process.env.MONITOR_CONTROL_LOCK_MS ?? "5000");
@@ -81,6 +85,75 @@ const controlLock = {
 };
 
 mkdirSync(RECORDINGS_DIR, { recursive: true });
+
+const SERVO_CONFIG_PATH = path.join(__dirname, "servo-config.json");
+const DEFAULT_SERVO_CONFIG = {
+  panMin: 0,
+  panMax: 100,
+  tiltMin: 0,
+  tiltMax: 100,
+  presets: {
+    forward: { pan: 66, tilt: 50 },
+    backward: { pan: 13, tilt: 50 },
+    left: { pan: 40, tilt: 50 },
+    right: { pan: 92, tilt: 50 },
+  },
+};
+/** @type {{ panMin: number; panMax: number; tiltMin: number; tiltMax: number; presets: Record<string, { pan: number; tilt: number }> }} */
+let servoConfig;
+
+function clampIntServoAxis(n, lo, hi) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return lo;
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function normalizeServoConfig(body) {
+  const d = DEFAULT_SERVO_CONFIG;
+  let panMin = clampIntServoAxis(body?.panMin ?? d.panMin, 0, 100);
+  let panMax = clampIntServoAxis(body?.panMax ?? d.panMax, 0, 100);
+  let tiltMin = clampIntServoAxis(body?.tiltMin ?? d.tiltMin, 0, 100);
+  let tiltMax = clampIntServoAxis(body?.tiltMax ?? d.tiltMax, 0, 100);
+  if (panMin > panMax) [panMin, panMax] = [panMax, panMin];
+  if (tiltMin > tiltMax) [tiltMin, tiltMax] = [tiltMax, tiltMin];
+  const presets = {};
+  const names = ["forward", "backward", "left", "right"];
+  const src = body?.presets && typeof body.presets === "object" ? body.presets : d.presets;
+  for (const key of names) {
+    const def = d.presets[key];
+    const p = src[key] && typeof src[key] === "object" ? src[key] : def;
+    presets[key] = {
+      pan: clampIntServoAxis(p?.pan ?? def.pan, panMin, panMax),
+      tilt: clampIntServoAxis(p?.tilt ?? def.tilt, tiltMin, tiltMax),
+    };
+  }
+  return { panMin, panMax, tiltMin, tiltMax, presets };
+}
+
+function servoConfigPublicJson() {
+  return {
+    panMin: servoConfig.panMin,
+    panMax: servoConfig.panMax,
+    tiltMin: servoConfig.tiltMin,
+    tiltMax: servoConfig.tiltMax,
+    presets: { ...servoConfig.presets },
+  };
+}
+
+function loadServoConfigFromDisk() {
+  try {
+    const raw = JSON.parse(readFileSync(SERVO_CONFIG_PATH, "utf8"));
+    servoConfig = normalizeServoConfig(raw);
+  } catch {
+    servoConfig = normalizeServoConfig({ ...DEFAULT_SERVO_CONFIG, presets: { ...DEFAULT_SERVO_CONFIG.presets } });
+  }
+}
+
+function persistServoConfig() {
+  writeFileSync(SERVO_CONFIG_PATH, `${JSON.stringify(servoConfig, null, 2)}\n`, "utf8");
+}
+
+loadServoConfigFromDisk();
 
 function recordingPathForNow() {
   const d = new Date();
@@ -260,6 +333,7 @@ function gpsJson() {
     gpsFresh: gpsAgeMs != null && gpsAgeMs <= GPS_STALE_MS,
     streamActive,
     controlLock: lock,
+    servoConfig: servoConfigPublicJson(),
   };
 }
 
@@ -423,7 +497,14 @@ app.get("/video_feed", (req, res) => {
     "Cache-Control": "no-cache, no-store, must-revalidate",
     Pragma: "no-cache",
     Connection: "keep-alive",
+    // nginx: disable response buffering for this long-lived stream
+    "X-Accel-Buffering": "no",
   });
+  try {
+    res.socket?.setNoDelay(true);
+  } catch {
+    // ignore
+  }
   videoSubscribers.add(res);
   if (streamActive && latestJpeg) {
     try {
@@ -448,6 +529,22 @@ app.get("/video_feed", (req, res) => {
 
 app.get("/api/gps", (_req, res) => {
   res.json(gpsJson());
+});
+
+app.get("/api/servo-config", (_req, res) => {
+  res.json({ ok: true, ...servoConfigPublicJson() });
+});
+
+app.put("/api/admin/servo-config", (req, res) => {
+  if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
+  servoConfig = normalizeServoConfig(req.body ?? {});
+  try {
+    persistServoConfig();
+  } catch (err) {
+    console.error("servo-config persist failed:", err?.message ?? err);
+  }
+  broadcastGps(gpsWss);
+  return res.json({ ok: true, ...servoConfigPublicJson() });
 });
 
 app.get("/api/admin/stats", (_req, res) => {
@@ -512,8 +609,9 @@ app.post("/api/servo", async (req, res) => {
   if (!Number.isFinite(panRaw) || !Number.isFinite(tiltRaw)) {
     return res.status(400).json({ ok: false, error: "pan and tilt must be numbers" });
   }
-  const pan = Math.round(Math.max(0, Math.min(100, panRaw)));
-  const tilt = Math.round(Math.max(0, Math.min(100, tiltRaw)));
+  const { panMin, panMax, tiltMin, tiltMax } = servoConfig;
+  const pan = clampIntServoAxis(panRaw, panMin, panMax);
+  const tilt = clampIntServoAxis(tiltRaw, tiltMin, tiltMax);
   const ws = encoderSocket;
   if (!ws || ws.readyState !== 1) {
     return res.status(503).json({ ok: false, error: "Encoder not connected" });
@@ -552,6 +650,13 @@ app.post("/api/servo", async (req, res) => {
 });
 
 const httpServer = createServer(app);
+httpServer.on("connection", (socket) => {
+  try {
+    socket.setNoDelay(true);
+  } catch {
+    // ignore
+  }
+});
 const ingestWss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
@@ -804,6 +909,7 @@ function shutdown() {
 httpServer.listen(PORT, HOST, () => {
   console.log(`Reciever listening on http://127.0.0.1:${PORT}/`);
   console.log(`Waiting for encoder on ws://<this-host>:${PORT}${INGEST_PATH}`);
+  console.log(`MJPEG subscriber buffer cap: ${MAX_SUBSCRIBER_BUFFER_BYTES}B per viewer (set MONITOR_SUBSCRIBER_MAX_BUFFER_BYTES)`);
   if (streamActive) startRecording();
 });
 

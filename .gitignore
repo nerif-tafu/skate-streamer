@@ -1,6 +1,7 @@
 **/node_modules/
 **/.env
 reciever/recordings/
+reciever/servo-config.json
 __pycache__/
 venv/
 .DS_Store

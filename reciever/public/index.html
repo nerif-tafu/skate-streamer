@@ -613,12 +613,34 @@
     let panPos = 50;
     let tiltPos = 50;
     const STEP = 4;
-    const PRESETS = {
+    let panMin = 0;
+    let panMax = 100;
+    let tiltMin = 0;
+    let tiltMax = 100;
+    let presets = {
       forward: { pan: 66, tilt: 50 },
       backward: { pan: 13, tilt: 50 },
       left: { pan: 40, tilt: 50 },
       right: { pan: 92, tilt: 50 },
     };
+
+    function applyServoConfig(sc) {
+      if (!sc || typeof sc !== "object") return;
+      if (Number.isFinite(sc.panMin)) panMin = sc.panMin;
+      if (Number.isFinite(sc.panMax)) panMax = sc.panMax;
+      if (Number.isFinite(sc.tiltMin)) tiltMin = sc.tiltMin;
+      if (Number.isFinite(sc.tiltMax)) tiltMax = sc.tiltMax;
+      if (sc.presets && typeof sc.presets === "object") {
+        for (const k of ["forward", "backward", "left", "right"]) {
+          const p = sc.presets[k];
+          if (p && typeof p === "object" && Number.isFinite(p.pan) && Number.isFinite(p.tilt)) {
+            presets[k] = { pan: p.pan, tilt: p.tilt };
+          }
+        }
+      }
+      panPos = Math.max(panMin, Math.min(panMax, panPos));
+      tiltPos = Math.max(tiltMin, Math.min(tiltMax, tiltPos));
+    }
     const clientId = (() => {
       const key = "monitorClientId";
       let id = localStorage.getItem(key);
@@ -864,15 +886,15 @@
     }
 
     function tryMove(nextPan, nextTilt) {
-      const p = Math.max(0, Math.min(100, Math.round(nextPan)));
-      const t = Math.max(0, Math.min(100, Math.round(nextTilt)));
+      const p = Math.max(panMin, Math.min(panMax, Math.round(nextPan)));
+      const t = Math.max(tiltMin, Math.min(tiltMax, Math.round(nextTilt)));
       sendServo(p, t);
     }
 
     presetButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
         tryStartAudio();
-        const preset = PRESETS[btn.dataset.preset];
+        const preset = presets[btn.dataset.preset];
         if (!preset) return;
         tryMove(preset.pan, preset.tilt);
       });
@@ -994,6 +1016,7 @@
 
     function onGps(data) {
       lastGpsPayload = data || null;
+      if (data && data.servoConfig) applyServoConfig(data.servoConfig);
       const active = !!(data && data.streamActive);
       if (active !== streamIsActive) {
         streamIsActive = active;

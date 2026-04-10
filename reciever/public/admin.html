@@ -234,6 +234,55 @@
     @media (prefers-reduced-motion: reduce) {
       button { transition: none; }
     }
+    .servo-card fieldset {
+      border: 2px solid var(--border);
+      padding: 10px;
+      margin: 0 0 10px;
+    }
+    .servo-card legend {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 0 8px;
+    }
+    .servo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    .servo-grid label {
+      display: grid;
+      gap: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .servo-grid input[type="number"] {
+      border: 2px solid var(--border);
+      padding: 8px 10px;
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+      min-height: 40px;
+      width: 100%;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .servo-presets {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+    }
+    .servo-card .servo-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    #servoSaveStatus { margin: 0; }
   </style>
 </head>
 <body>
@@ -246,6 +295,51 @@
     <div class="card">
       <div class="row">
         <button id="toggleStreamBtn" class="start">End Live Stream</button>
+      </div>
+    </div>
+
+    <div class="card servo-card">
+      <div class="row" style="margin-bottom: 0.45rem;">
+        <strong>Servo presets &amp; limits</strong>
+        <span class="muted">Pan / tilt 0–100 · applies to arrow keys, preset buttons, and API clamp</span>
+      </div>
+      <fieldset>
+        <legend>Axis limits (clamp)</legend>
+        <div class="servo-grid">
+          <label>Pan min <input type="number" id="servoPanMin" min="0" max="100" step="1" /></label>
+          <label>Pan max <input type="number" id="servoPanMax" min="0" max="100" step="1" /></label>
+          <label>Tilt min <input type="number" id="servoTiltMin" min="0" max="100" step="1" /></label>
+          <label>Tilt max <input type="number" id="servoTiltMax" min="0" max="100" step="1" /></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Preset positions</legend>
+        <div class="servo-presets">
+          <div class="servo-grid">
+            <strong style="grid-column: 1 / -1; font-size: 10px; letter-spacing: 0.12em;">Forward</strong>
+            <label>Pan <input type="number" id="presetForwardPan" min="0" max="100" step="1" /></label>
+            <label>Tilt <input type="number" id="presetForwardTilt" min="0" max="100" step="1" /></label>
+          </div>
+          <div class="servo-grid">
+            <strong style="grid-column: 1 / -1; font-size: 10px; letter-spacing: 0.12em;">Backward</strong>
+            <label>Pan <input type="number" id="presetBackwardPan" min="0" max="100" step="1" /></label>
+            <label>Tilt <input type="number" id="presetBackwardTilt" min="0" max="100" step="1" /></label>
+          </div>
+          <div class="servo-grid">
+            <strong style="grid-column: 1 / -1; font-size: 10px; letter-spacing: 0.12em;">Left</strong>
+            <label>Pan <input type="number" id="presetLeftPan" min="0" max="100" step="1" /></label>
+            <label>Tilt <input type="number" id="presetLeftTilt" min="0" max="100" step="1" /></label>
+          </div>
+          <div class="servo-grid">
+            <strong style="grid-column: 1 / -1; font-size: 10px; letter-spacing: 0.12em;">Right</strong>
+            <label>Pan <input type="number" id="presetRightPan" min="0" max="100" step="1" /></label>
+            <label>Tilt <input type="number" id="presetRightTilt" min="0" max="100" step="1" /></label>
+          </div>
+        </div>
+      </fieldset>
+      <div class="servo-actions">
+        <button type="button" id="servoSaveBtn" class="start">Save servo settings</button>
+        <p id="servoSaveStatus" class="muted" aria-live="polite"></p>
       </div>
     </div>
 
@@ -285,6 +379,20 @@
     const statsBody = document.getElementById("statsBody");
     const gpsBody = document.getElementById("gpsBody");
     const recordingsBody = document.getElementById("recordingsBody");
+    const servoSaveBtn = document.getElementById("servoSaveBtn");
+    const servoSaveStatus = document.getElementById("servoSaveStatus");
+    const servoPanMin = document.getElementById("servoPanMin");
+    const servoPanMax = document.getElementById("servoPanMax");
+    const servoTiltMin = document.getElementById("servoTiltMin");
+    const servoTiltMax = document.getElementById("servoTiltMax");
+    const presetForwardPan = document.getElementById("presetForwardPan");
+    const presetForwardTilt = document.getElementById("presetForwardTilt");
+    const presetBackwardPan = document.getElementById("presetBackwardPan");
+    const presetBackwardTilt = document.getElementById("presetBackwardTilt");
+    const presetLeftPan = document.getElementById("presetLeftPan");
+    const presetLeftTilt = document.getElementById("presetLeftTilt");
+    const presetRightPan = document.getElementById("presetRightPan");
+    const presetRightTilt = document.getElementById("presetRightTilt");
 
     let lastRecordingsSig = null;
     let adminWs = null;
@@ -300,6 +408,46 @@
 
     function row(name, value) {
       return `<tr><td>${name}</td><td>${value}</td></tr>`;
+    }
+
+    function fillServoForm(c) {
+      if (!c || !servoPanMin) return;
+      servoPanMin.value = String(c.panMin ?? 0);
+      servoPanMax.value = String(c.panMax ?? 100);
+      servoTiltMin.value = String(c.tiltMin ?? 0);
+      servoTiltMax.value = String(c.tiltMax ?? 100);
+      const p = c.presets || {};
+      if (p.forward) {
+        presetForwardPan.value = String(p.forward.pan);
+        presetForwardTilt.value = String(p.forward.tilt);
+      }
+      if (p.backward) {
+        presetBackwardPan.value = String(p.backward.pan);
+        presetBackwardTilt.value = String(p.backward.tilt);
+      }
+      if (p.left) {
+        presetLeftPan.value = String(p.left.pan);
+        presetLeftTilt.value = String(p.left.tilt);
+      }
+      if (p.right) {
+        presetRightPan.value = String(p.right.pan);
+        presetRightTilt.value = String(p.right.tilt);
+      }
+    }
+
+    function readServoFormPayload() {
+      return {
+        panMin: Number(servoPanMin.value),
+        panMax: Number(servoPanMax.value),
+        tiltMin: Number(servoTiltMin.value),
+        tiltMax: Number(servoTiltMax.value),
+        presets: {
+          forward: { pan: Number(presetForwardPan.value), tilt: Number(presetForwardTilt.value) },
+          backward: { pan: Number(presetBackwardPan.value), tilt: Number(presetBackwardTilt.value) },
+          left: { pan: Number(presetLeftPan.value), tilt: Number(presetLeftTilt.value) },
+          right: { pan: Number(presetRightPan.value), tilt: Number(presetRightTilt.value) },
+        },
+      };
     }
 
     function fmtBytes(n) {
@@ -481,6 +629,7 @@
 
     function onAdminPayload(s) {
       applyDashboard(s);
+      if (s.servoConfig) fillServoForm(s.servoConfig);
       const sig = s.recordingsSig ?? "";
       if (sig !== lastRecordingsSig) {
         lastRecordingsSig = sig;
@@ -568,6 +717,32 @@
       } catch (_) {}
       location.href = "/admin/login";
     });
+
+    if (servoSaveBtn) {
+      servoSaveBtn.addEventListener("click", async () => {
+        if (servoSaveStatus) servoSaveStatus.textContent = "";
+        servoSaveBtn.disabled = true;
+        try {
+          const r = await fetch("/api/admin/servo-config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(readServoFormPayload()),
+          });
+          if (r.status === 401) {
+            location.href = "/admin/login";
+            return;
+          }
+          const j = await r.json();
+          if (!j.ok) throw new Error(j.error || "Save failed");
+          fillServoForm(j);
+          if (servoSaveStatus) servoSaveStatus.textContent = "Saved — stream page picks this up over /ws/gps.";
+        } catch (e) {
+          if (servoSaveStatus) servoSaveStatus.textContent = String(e?.message ?? e);
+        } finally {
+          servoSaveBtn.disabled = false;
+        }
+      });
+    }
 
     boot();
   </script>

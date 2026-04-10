@@ -18,6 +18,7 @@ Defaults:
 - UI: `http://127.0.0.1:9090/`
 - ingest websocket for encoder: `ws://<reciever-host>:9090/ingest`
 - Video is fixed at **30 fps** end-to-end (encoder capture → live MJPEG → MP4 recording).
+- **Remote latency**: buffers are kept small so slow links **drop frames** instead of growing a multi-second delay. TCP **Nagle is off** (`setNoDelay`), and `/video_feed` sends **`X-Accel-Buffering: no`** for nginx. Put the receiver **geographically close to viewers** when possible; behind nginx use `proxy_buffering off` for `/video_feed`. Lower encoder **`MONITOR_JPEG_QUALITY`** (e.g. `60`) if bandwidth is the bottleneck.
 
 ## 2) Start the encoder (on Pi)
 

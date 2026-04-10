@@ -37,7 +37,11 @@ const FRAME_HEIGHT = Number(process.env.MONITOR_FRAME_HEIGHT ?? "720");
 /** Fixed pipeline rate: capture, upstream JPEGs, and receiver MP4 recording. */
 const VIDEO_FPS = 30;
 const JPEG_QUALITY = Math.min(100, Math.max(1, Number(process.env.MONITOR_JPEG_QUALITY ?? "75")));
-const MAX_UPSTREAM_BUFFER_BYTES = Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "262144");
+/** Drop frames when WS send buffer grows (Pi→receiver); lower = lower end-to-end latency under load. */
+const MAX_UPSTREAM_BUFFER_BYTES = Math.max(
+  16384,
+  Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "131072"),
+);
 const FFMPEG_PATH = process.env.MONITOR_FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 
 const RECEIVER_WS_URL = process.env.MONITOR_RECEIVER_WS_URL ?? "ws://127.0.0.1:9090/ingest";
@@ -734,6 +738,7 @@ function shutdown() {
 
 console.log(`Encoder starting (id: ${ENCODER_ID})`);
 console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${VIDEO_FPS}fps (fixed)`);
+console.log(`Upstream WS buffer cap: ${MAX_UPSTREAM_BUFFER_BYTES}B (MONITOR_MAX_UPSTREAM_BUFFER_BYTES)`);
 if (AUDIO_ENABLED) {
   console.log(`Audio: ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz PCM (trying ${audioDeviceCandidates.length} ALSA devices)`);
   console.log(`  first: ${audioDeviceCandidates.slice(0, 6).join(", ")}${audioDeviceCandidates.length > 6 ? "…" : ""}`);
