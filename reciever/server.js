@@ -155,6 +155,19 @@ function persistServoConfig() {
 
 loadServoConfigFromDisk();
 
+/** Last acknowledged pan/tilt from a successful /api/servo (shown to new / page loads). */
+let lastServoPan;
+let lastServoTilt;
+function resetLastServoToConfigCenter() {
+  lastServoPan = Math.round((servoConfig.panMin + servoConfig.panMax) / 2);
+  lastServoTilt = Math.round((servoConfig.tiltMin + servoConfig.tiltMax) / 2);
+}
+function clampLastServoToConfig() {
+  lastServoPan = clampIntServoAxis(lastServoPan, servoConfig.panMin, servoConfig.panMax);
+  lastServoTilt = clampIntServoAxis(lastServoTilt, servoConfig.tiltMin, servoConfig.tiltMax);
+}
+resetLastServoToConfigCenter();
+
 function recordingPathForNow() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -334,6 +347,8 @@ function gpsJson() {
     streamActive,
     controlLock: lock,
     servoConfig: servoConfigPublicJson(),
+    servoPan: lastServoPan,
+    servoTilt: lastServoTilt,
   };
 }
 
@@ -532,12 +547,13 @@ app.get("/api/gps", (_req, res) => {
 });
 
 app.get("/api/servo-config", (_req, res) => {
-  res.json({ ok: true, ...servoConfigPublicJson() });
+  res.json({ ok: true, ...servoConfigPublicJson(), servoPan: lastServoPan, servoTilt: lastServoTilt });
 });
 
 app.put("/api/admin/servo-config", (req, res) => {
   if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   servoConfig = normalizeServoConfig(req.body ?? {});
+  clampLastServoToConfig();
   try {
     persistServoConfig();
   } catch (err) {
@@ -639,6 +655,8 @@ app.post("/api/servo", async (req, res) => {
   });
 
   if (ack.ok) {
+    lastServoPan = pan;
+    lastServoTilt = tilt;
     controlLock.holder = clientId;
     controlLock.expiresAt = Date.now() + CONTROL_LOCK_MS;
     broadcastGps(gpsWss);

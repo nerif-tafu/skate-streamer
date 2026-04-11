@@ -641,6 +641,13 @@
       panPos = Math.max(panMin, Math.min(panMax, panPos));
       tiltPos = Math.max(tiltMin, Math.min(tiltMax, tiltPos));
     }
+
+    /** Sync UI pan/tilt from server last acknowledged position (page refresh). */
+    function applyServoPositionFromServer(data) {
+      if (!data || typeof data !== "object") return;
+      if (Number.isFinite(data.servoPan)) panPos = Math.max(panMin, Math.min(panMax, Math.round(data.servoPan)));
+      if (Number.isFinite(data.servoTilt)) tiltPos = Math.max(tiltMin, Math.min(tiltMax, Math.round(data.servoTilt)));
+    }
     const clientId = (() => {
       const key = "monitorClientId";
       let id = localStorage.getItem(key);
@@ -1017,6 +1024,7 @@
     function onGps(data) {
       lastGpsPayload = data || null;
       if (data && data.servoConfig) applyServoConfig(data.servoConfig);
+      if (data) applyServoPositionFromServer(data);
       const active = !!(data && data.streamActive);
       if (active !== streamIsActive) {
         streamIsActive = active;
