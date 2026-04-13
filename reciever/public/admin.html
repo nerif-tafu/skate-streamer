@@ -283,6 +283,45 @@
       margin-top: 6px;
     }
     #servoSaveStatus { margin: 0; }
+    .admin-preview-card { display: grid; gap: 8px; }
+    .admin-preview-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px 12px;
+    }
+    .admin-preview-frame {
+      position: relative;
+      border: 2px solid var(--border);
+      background: #000;
+      aspect-ratio: 16 / 9;
+      max-height: min(52dvh, 520px);
+      overflow: hidden;
+    }
+    .admin-preview-frame img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      vertical-align: top;
+    }
+    .admin-preview-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 120px;
+      padding: 16px;
+      border: 2px dashed var(--border);
+      background: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      text-align: center;
+      color: #222;
+    }
+    .admin-preview-card.is-live .admin-preview-placeholder { display: none; }
+    .admin-preview-card:not(.is-live) .admin-preview-frame { display: none; }
   </style>
 </head>
 <body>
@@ -295,6 +334,19 @@
     <div class="card">
       <div class="row">
         <button id="toggleStreamBtn" class="start">End Live Stream</button>
+      </div>
+    </div>
+
+    <div id="adminPreviewCard" class="card admin-preview-card">
+      <div class="admin-preview-head">
+        <strong>Camera preview</strong>
+        <span class="muted">Live JPEG from encoder (admin only)</span>
+      </div>
+      <div class="admin-preview-placeholder" id="adminPreviewPlaceholder">
+        Encoder offline or no recent frames.
+      </div>
+      <div class="admin-preview-frame">
+        <img id="adminCameraPreview" alt="Encoder camera preview" width="1280" height="720" decoding="async" />
       </div>
     </div>
 
@@ -393,10 +445,40 @@
     const presetLeftTilt = document.getElementById("presetLeftTilt");
     const presetRightPan = document.getElementById("presetRightPan");
     const presetRightTilt = document.getElementById("presetRightTilt");
+    const adminPreviewCard = document.getElementById("adminPreviewCard");
+    const adminCameraPreview = document.getElementById("adminCameraPreview");
+
+    /** True after user edits servo limits/presets; cleared on save. Skips WS overwrites while typing. */
+    let servoFormDirty = false;
+    [
+      servoPanMin, servoPanMax, servoTiltMin, servoTiltMax,
+      presetForwardPan, presetForwardTilt, presetBackwardPan, presetBackwardTilt,
+      presetLeftPan, presetLeftTilt, presetRightPan, presetRightTilt,
+    ].forEach((el) => {
+      if (el) el.addEventListener("input", () => { servoFormDirty = true; });
+    });
 
     let lastRecordingsSig = null;
     let adminWs = null;
     let reconnectTimer = null;
+    let adminPreviewStreamOn = false;
+
+    function setAdminCameraPreview(s) {
+      if (!adminPreviewCard || !adminCameraPreview) return;
+      const live = !!(s.encoderConnected && s.cameraFresh);
+      adminPreviewCard.classList.toggle("is-live", live);
+      if (live) {
+        if (!adminPreviewStreamOn) {
+          adminPreviewStreamOn = true;
+          adminCameraPreview.src = `/api/admin/camera_feed?_=${Date.now()}`;
+        }
+      } else {
+        if (adminPreviewStreamOn) {
+          adminPreviewStreamOn = false;
+          adminCameraPreview.removeAttribute("src");
+        }
+      }
+    }
 
     function fmtMs(ms) {
       const s = Math.floor((ms || 0) / 1000);
@@ -629,7 +711,8 @@
 
     function onAdminPayload(s) {
       applyDashboard(s);
-      if (s.servoConfig) fillServoForm(s.servoConfig);
+      setAdminCameraPreview(s);
+      if (s.servoConfig && !servoFormDirty) fillServoForm(s.servoConfig);
       const sig = s.recordingsSig ?? "";
       if (sig !== lastRecordingsSig) {
         lastRecordingsSig = sig;
@@ -734,6 +817,7 @@
           }
           const j = await r.json();
           if (!j.ok) throw new Error(j.error || "Save failed");
+          servoFormDirty = false;
           fillServoForm(j);
           if (servoSaveStatus) servoSaveStatus.textContent = "Saved — stream page picks this up over /ws/gps.";
         } catch (e) {

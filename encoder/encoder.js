@@ -597,6 +597,7 @@ function connectUpstreamLoop() {
         videoDevice: VIDEO_DEVICE,
         gpsPath: GPS_PATH,
         gpsBaud: GPS_BAUD,
+        audioEnabled: AUDIO_ENABLED,
         audioSampleRate: AUDIO_SAMPLE_RATE,
         audioChannels: AUDIO_CHANNELS,
       },

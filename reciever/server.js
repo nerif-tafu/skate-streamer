@@ -42,6 +42,9 @@ let streamStartedAt = null;
 let recordingProc = null;
 let recordingName = null;
 let recordingStartedAt = null;
+let recordingAudioPadTimer = null;
+let lastRecordingAudioWriteMs = 0;
+const adminPreviewSubscribers = new Set();
 const adminSessions = new Map();
 const gpsState = {
   ok: false,
@@ -209,10 +212,33 @@ function listRecordings({ includeActive = false } = {}) {
   return items;
 }
 
+function recordingSilenceChunkBytes() {
+  const sr = Math.max(8000, Number(audioConfig.sampleRate) || 48000);
+  const ch = Math.min(2, Math.max(1, Number(audioConfig.channels) || 1));
+  const samples = Math.max(64, Math.floor(sr / 50));
+  return Buffer.alloc(samples * ch * 2, 0);
+}
+
+function recordingPadAudioIfIdle() {
+  const proc = recordingProc;
+  const audioIn = proc?.stdio?.[3];
+  if (!audioIn || audioIn.destroyed) return;
+  const now = Date.now();
+  if (now - lastRecordingAudioWriteMs < 40) return;
+  try {
+    audioIn.write(recordingSilenceChunkBytes());
+    lastRecordingAudioWriteMs = now;
+  } catch {
+    // ignore
+  }
+}
+
 function startRecording() {
   if (!streamActive || recordingProc) return;
   const outName = recordingPathForNow();
   const outPath = path.join(RECORDINGS_DIR, outName);
+  const sr = Math.max(8000, Number(audioConfig.sampleRate) || 48000);
+  const ch = Math.min(2, Math.max(1, Number(audioConfig.channels) || 1));
   const args = [
     "-hide_banner",
     "-loglevel",
@@ -224,41 +250,82 @@ function startRecording() {
     String(VIDEO_FPS),
     "-i",
     "pipe:0",
-    "-an",
+    "-f",
+    "s16le",
+    "-ar",
+    String(sr),
+    "-ac",
+    String(ch),
+    "-i",
+    "pipe:3",
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
     "-c:v",
     "libx264",
     "-preset",
     "veryfast",
     "-pix_fmt",
     "yuv420p",
+    "-r",
+    String(VIDEO_FPS),
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
     "-movflags",
     "+faststart",
     outPath,
   ];
-  const proc = spawn(FFMPEG_BIN, args, { stdio: ["pipe", "ignore", "pipe"] });
+  const proc = spawn(FFMPEG_BIN, args, { stdio: ["pipe", "ignore", "pipe", "pipe"] });
   recordingProc = proc;
   recordingName = outName;
   recordingStartedAt = Date.now();
+  lastRecordingAudioWriteMs = 0;
+  if (recordingAudioPadTimer) {
+    clearInterval(recordingAudioPadTimer);
+    recordingAudioPadTimer = null;
+  }
+  recordingAudioPadTimer = setInterval(recordingPadAudioIfIdle, 25);
   proc.stderr.on("data", (b) => {
     const t = b.toString().trim();
     if (t) console.error("[recording ffmpeg]", t);
   });
   proc.on("close", () => {
+    if (recordingAudioPadTimer) {
+      clearInterval(recordingAudioPadTimer);
+      recordingAudioPadTimer = null;
+    }
     recordingProc = null;
     recordingName = null;
     recordingStartedAt = null;
   });
   proc.on("error", (err) => {
+    if (recordingAudioPadTimer) {
+      clearInterval(recordingAudioPadTimer);
+      recordingAudioPadTimer = null;
+    }
     console.error("Recording process error:", err?.message ?? err);
   });
-  console.log(`Recording started: ${outName} @ ${VIDEO_FPS}fps`);
+  console.log(`Recording started: ${outName} @ ${VIDEO_FPS}fps + ${ch}ch@${sr}Hz audio`);
 }
 
 function stopRecording() {
   const proc = recordingProc;
   if (!proc) return;
+  if (recordingAudioPadTimer) {
+    clearInterval(recordingAudioPadTimer);
+    recordingAudioPadTimer = null;
+  }
   try {
     proc.stdin.end();
+  } catch {
+    // ignore
+  }
+  try {
+    const audioIn = proc.stdio?.[3];
+    if (audioIn && !audioIn.destroyed) audioIn.end();
   } catch {
     // ignore
   }
@@ -388,25 +455,33 @@ function broadcastGps(wssGps) {
   }
 }
 
-function broadcastFrame(jpeg) {
+function broadcastMultipartJpeg(jpeg, subscribers) {
   const part = Buffer.concat([
     Buffer.from("--frame\r\nContent-Type: image/jpeg\r\n\r\n"),
     jpeg,
     Buffer.from("\r\n"),
   ]);
-  for (const res of videoSubscribers) {
+  for (const res of subscribers) {
     try {
       if (res.writableEnded) {
-        videoSubscribers.delete(res);
+        subscribers.delete(res);
         continue;
       }
       // Skip this frame for slow clients instead of buffering delay.
       if (res.writableNeedDrain || res.writableLength > MAX_SUBSCRIBER_BUFFER_BYTES) continue;
       res.write(part);
     } catch {
-      videoSubscribers.delete(res);
+      subscribers.delete(res);
     }
   }
+}
+
+function broadcastFrame(jpeg) {
+  broadcastMultipartJpeg(jpeg, videoSubscribers);
+}
+
+function broadcastAdminPreviewFrame(jpeg) {
+  broadcastMultipartJpeg(jpeg, adminPreviewSubscribers);
 }
 
 function broadcastAudioChunk(wssAudio, audioChunk) {
@@ -534,6 +609,42 @@ app.get("/video_feed", (req, res) => {
   }
   req.on("close", () => {
     videoSubscribers.delete(res);
+    try {
+      res.end();
+    } catch {
+      // ignore
+    }
+  });
+});
+
+app.get("/api/admin/camera_feed", (req, res) => {
+  if (!isAdminSessionValid(req)) return res.status(401).send("admin auth required");
+  res.writeHead(200, {
+    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Pragma: "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  try {
+    res.socket?.setNoDelay(true);
+  } catch {
+    // ignore
+  }
+  adminPreviewSubscribers.add(res);
+  if (latestJpeg) {
+    try {
+      res.write(Buffer.concat([
+        Buffer.from("--frame\r\nContent-Type: image/jpeg\r\n\r\n"),
+        latestJpeg,
+        Buffer.from("\r\n"),
+      ]));
+    } catch {
+      // ignore
+    }
+  }
+  req.on("close", () => {
+    adminPreviewSubscribers.delete(res);
     try {
       res.end();
     } catch {
@@ -763,6 +874,7 @@ ingestWss.on("connection", (ws) => {
         stats.framesReceived += 1;
         latestJpeg = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
         latestFrameTs = Date.now();
+        broadcastAdminPreviewFrame(latestJpeg);
         if (streamActive) broadcastFrame(latestJpeg);
         if (streamActive && recordingProc && !recordingProc.stdin.destroyed) {
           try {
@@ -818,6 +930,7 @@ ingestWss.on("connection", (ws) => {
         stats.framesReceived += 1;
         latestJpeg = Buffer.from(msg.jpegBase64, "base64");
         latestFrameTs = Number(msg.ts ?? Date.now());
+        broadcastAdminPreviewFrame(latestJpeg);
         if (streamActive) broadcastFrame(latestJpeg);
         if (streamActive && recordingProc && !recordingProc.stdin.destroyed) {
           try {
@@ -836,6 +949,15 @@ ingestWss.on("connection", (ws) => {
         const chunk = Buffer.from(msg.audioBase64, "base64");
         latestAudioTs = Number(msg.ts ?? Date.now());
         if (streamActive) broadcastAudioChunk(audioWss, chunk);
+        const audioIn = recordingProc?.stdio?.[3];
+        if (streamActive && recordingProc && audioIn && !audioIn.destroyed) {
+          try {
+            audioIn.write(chunk);
+            lastRecordingAudioWriteMs = Date.now();
+          } catch {
+            // ignore recording audio write failures
+          }
+        }
       } catch {
         // ignore malformed audio chunk
       }
@@ -852,6 +974,8 @@ ingestWss.on("connection", (ws) => {
       stats.encoderDisconnects += 1;
       encoderSocket = null;
       encoderMeta = null;
+      latestJpeg = null;
+      latestFrameTs = null;
       console.log("Encoder disconnected");
       broadcastGps(gpsWss);
     }
@@ -892,6 +1016,14 @@ function shutdown() {
     }
   }
   videoSubscribers.clear();
+  for (const res of adminPreviewSubscribers) {
+    try {
+      res.end();
+    } catch {
+      // ignore
+    }
+  }
+  adminPreviewSubscribers.clear();
   for (const [id, resolve] of pendingServoAcks.entries()) {
     resolve({ ok: false, error: "Server shutting down", reqId: id });
   }

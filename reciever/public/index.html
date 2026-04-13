@@ -160,6 +160,18 @@
     .camera-pane.no-video-feed .camera-fullscreen-btn {
       display: none;
     }
+    .camera-pane.is-pseudo-fullscreen {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      max-height: none;
+      border: 2px solid var(--border);
+      background: var(--bg);
+    }
+    .camera-pane.is-pseudo-fullscreen .stream {
+      width: 100%;
+      height: 100%;
+    }
     .camera-pane.pane-switching-hidden,
     .map-pane.pane-switching-hidden {
       opacity: 0;
@@ -750,8 +762,23 @@
       presetButtons.forEach((b) => { b.disabled = !enabled; });
     }
 
+    function documentFullscreenElement() {
+      return (
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
+    }
+
+    let pseudoCameraFullscreen = false;
+
+    function isCameraApiFullscreen() {
+      return documentFullscreenElement() === cameraPane;
+    }
+
     function isCameraFullscreen() {
-      return document.fullscreenElement === cameraPane;
+      return pseudoCameraFullscreen || isCameraApiFullscreen();
     }
 
     function renderFullscreenBtn() {
@@ -759,15 +786,46 @@
       cameraFullscreenBtn.textContent = isCameraFullscreen() ? "Exit Fullscreen" : "Fullscreen";
     }
 
+    function exitDocumentFullscreen() {
+      if (document.exitFullscreen) return document.exitFullscreen();
+      if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+      if (document.mozCancelFullScreen) return document.mozCancelFullScreen();
+      if (document.msExitFullscreen) return document.msExitFullscreen();
+      return Promise.resolve();
+    }
+
+    async function enterCameraFullscreen() {
+      const req =
+        cameraPane.requestFullscreen ||
+        cameraPane.webkitRequestFullscreen ||
+        cameraPane.mozRequestFullScreen ||
+        cameraPane.msRequestFullscreen;
+      if (!req) throw new Error("fullscreen unsupported");
+      await req.call(cameraPane);
+    }
+
     async function toggleCameraFullscreen() {
       if (!cameraPane) return;
       try {
-        if (isCameraFullscreen()) await document.exitFullscreen();
-        else await cameraPane.requestFullscreen();
+        if (pseudoCameraFullscreen) {
+          pseudoCameraFullscreen = false;
+          cameraPane.classList.remove("is-pseudo-fullscreen");
+        } else if (isCameraApiFullscreen()) {
+          await exitDocumentFullscreen();
+        } else {
+          try {
+            await enterCameraFullscreen();
+          } catch {
+            pseudoCameraFullscreen = true;
+            cameraPane.classList.add("is-pseudo-fullscreen");
+          }
+        }
       } catch {
         // ignore fullscreen failures (unsupported or blocked)
       } finally {
         renderFullscreenBtn();
+        updateStageLayout();
+        invalidateMapSize();
       }
     }
 
@@ -907,14 +965,24 @@
       });
     });
     if (cameraFullscreenBtn) cameraFullscreenBtn.addEventListener("click", toggleCameraFullscreen);
-    document.addEventListener("fullscreenchange", () => {
+    function onFullscreenLayoutEvent() {
       renderFullscreenBtn();
       updateStageLayout();
       invalidateMapSize();
-    });
+    }
+    document.addEventListener("fullscreenchange", onFullscreenLayoutEvent);
+    document.addEventListener("webkitfullscreenchange", onFullscreenLayoutEvent);
     renderFullscreenBtn();
 
     window.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && pseudoCameraFullscreen) {
+        pseudoCameraFullscreen = false;
+        cameraPane.classList.remove("is-pseudo-fullscreen");
+        renderFullscreenBtn();
+        updateStageLayout();
+        invalidateMapSize();
+        return;
+      }
       if (document.body.classList.contains("stream-ended")) return;
       const key = ev.key;
       if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key)) return;
