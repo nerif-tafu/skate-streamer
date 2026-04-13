@@ -19,6 +19,7 @@ Defaults:
 - ingest websocket for encoder: `ws://<reciever-host>:9090/ingest`
 - Video is fixed at **30 fps** end-to-end (encoder capture → live MJPEG → MP4 recording).
 - **Remote latency**: buffers are kept small so slow links **drop frames** instead of growing a multi-second delay. TCP **Nagle is off** (`setNoDelay`), and `/video_feed` sends **`X-Accel-Buffering: no`** for nginx. Put the receiver **geographically close to viewers** when possible; behind nginx use `proxy_buffering off` for `/video_feed`. Lower encoder **`MONITOR_JPEG_QUALITY`** (e.g. `60`) if bandwidth is the bottleneck.
+- **Cellular / bursty links**: the encoder **decimates MJPEG** when the WebSocket send queue rises (before the hard cap) and **pauses upstream audio** briefly while the queue is elevated so video bytes drain first—same capture quality when the queue is low; smoother behavior during 4G stalls. Tune **`MONITOR_UPSTREAM_SOFT1_BYTES`**, **`MONITOR_UPSTREAM_SOFT2_BYTES`**, **`MONITOR_UPSTREAM_AUDIO_PAUSE_BYTES`**, and **`MONITOR_MAX_UPSTREAM_BUFFER_BYTES`** together (soft tiers must stay below the hard cap).
 
 ## 2) Start the encoder (on Pi)
 
@@ -38,6 +39,9 @@ Useful encoder env vars:
 - `MONITOR_AUDIO_DEVICE_MATCH` (optional substring to prefer a capture card when multiple exist, e.g. `Streamer`)
 - `MONITOR_AUDIO_SAMPLE_RATE`, `MONITOR_AUDIO_CHANNELS`, `MONITOR_AUDIO_CHUNK_SAMPLES` (defaults `48000`, `1`, `1024`)
 - `MONITOR_HOMING_SERVO_A`, `MONITOR_HOMING_SERVO_B` (defaults `50`, `50`)
+- `MONITOR_MAX_UPSTREAM_BUFFER_BYTES` (default `131072`) — hard drop when Pi→receiver WS send buffer reaches this size
+- `MONITOR_UPSTREAM_SOFT1_BYTES`, `MONITOR_UPSTREAM_SOFT2_BYTES` (defaults scale with the hard cap) — start sending ~½ then ~⅓ of frames as the queue grows
+- `MONITOR_UPSTREAM_AUDIO_PAUSE_BYTES` (default ~32% of hard cap) — skip audio chunks while the queue is above this so video is prioritized
 
 Servo protocol remains:
 

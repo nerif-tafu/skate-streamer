@@ -42,6 +42,24 @@ const MAX_UPSTREAM_BUFFER_BYTES = Math.max(
   16384,
   Number(process.env.MONITOR_MAX_UPSTREAM_BUFFER_BYTES ?? "131072"),
 );
+/** Below this queue size, send every captured frame (full quality when link is good). */
+const UPSTREAM_SOFT1_BYTES = Math.min(
+  MAX_UPSTREAM_BUFFER_BYTES - 1,
+  Math.max(8192, Number(process.env.MONITOR_UPSTREAM_SOFT1_BYTES ?? String(Math.floor(MAX_UPSTREAM_BUFFER_BYTES * 0.28)))),
+);
+/** Above this, send ~1/3 of frames until the queue drains (cellular stalls). */
+const UPSTREAM_SOFT2_BYTES = Math.min(
+  MAX_UPSTREAM_BUFFER_BYTES - 1,
+  Math.max(
+    UPSTREAM_SOFT1_BYTES + 2048,
+    Number(process.env.MONITOR_UPSTREAM_SOFT2_BYTES ?? String(Math.floor(MAX_UPSTREAM_BUFFER_BYTES * 0.52))),
+  ),
+);
+/** Skip upstreaming audio PCM while WS send queue is above this (JSON competes with video on one TCP socket). */
+const UPSTREAM_AUDIO_PAUSE_BYTES = Math.min(
+  MAX_UPSTREAM_BUFFER_BYTES - 1,
+  Math.max(4096, Number(process.env.MONITOR_UPSTREAM_AUDIO_PAUSE_BYTES ?? String(Math.floor(MAX_UPSTREAM_BUFFER_BYTES * 0.32)))),
+);
 const FFMPEG_PATH = process.env.MONITOR_FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 
 const RECEIVER_WS_URL = process.env.MONITOR_RECEIVER_WS_URL ?? "ws://127.0.0.1:9090/ingest";
@@ -327,6 +345,8 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 let ffmpegProc = null;
 let mjpegBuffer = Buffer.alloc(0);
 let lastUpstreamDropLogAt = 0;
+/** Phase counter for soft frame decimation (2:1 and 3:1) when WS queue is elevated. */
+let upstreamSoftPhase = 0;
 let ffmpegAudioProc = null;
 
 function parseArecordList() {
@@ -547,14 +567,33 @@ function onMjpegChunk(chunk) {
     perf.frameDecoded += 1;
     const now = Date.now();
     const ws = upstreamWs;
-    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_UPSTREAM_BUFFER_BYTES) {
+    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+      perf.frameDropped += 1;
+      continue;
+    }
+    const bufQueued = ws.bufferedAmount;
+    if (bufQueued >= MAX_UPSTREAM_BUFFER_BYTES) {
       perf.frameDropped += 1;
       if (now - lastUpstreamDropLogAt > 2000) {
         lastUpstreamDropLogAt = now;
-        const queued = ws ? ws.bufferedAmount : 0;
-        console.warn(`Dropping frame to keep realtime latency low (upstream queue=${queued}B)`);
+        console.warn(`Dropping frame (upstream queue=${bufQueued}B >= cap ${MAX_UPSTREAM_BUFFER_BYTES}B)`);
       }
       continue;
+    }
+    if (bufQueued < UPSTREAM_SOFT1_BYTES) {
+      upstreamSoftPhase = 0;
+    } else if (bufQueued >= UPSTREAM_SOFT2_BYTES) {
+      upstreamSoftPhase += 1;
+      if (upstreamSoftPhase % 3 !== 0) {
+        perf.frameDropped += 1;
+        continue;
+      }
+    } else {
+      upstreamSoftPhase += 1;
+      if (upstreamSoftPhase % 2 !== 0) {
+        perf.frameDropped += 1;
+        continue;
+      }
     }
     perf.frameSent += 1;
     perf.frameBytesSent += frame.length;
@@ -637,6 +676,9 @@ function connectUpstreamLoop() {
 function sendUpstream(obj) {
   const ws = upstreamWs;
   if (!ws || !wsConnected || ws.readyState !== WebSocket.OPEN) return;
+  if (obj?.type === "audioPcm" && typeof obj.audioBase64 === "string" && ws.bufferedAmount > UPSTREAM_AUDIO_PAUSE_BYTES) {
+    return;
+  }
   if (obj?.type === "audioPcm" && typeof obj.audioBase64 === "string") {
     perf.audioChunkSent += 1;
     perf.audioBytes += Math.floor((obj.audioBase64.length * 3) / 4);
@@ -739,7 +781,9 @@ function shutdown() {
 
 console.log(`Encoder starting (id: ${ENCODER_ID})`);
 console.log(`Camera: ${VIDEO_DEVICE} ${FRAME_WIDTH}x${FRAME_HEIGHT}@${VIDEO_FPS}fps (fixed)`);
-console.log(`Upstream WS buffer cap: ${MAX_UPSTREAM_BUFFER_BYTES}B (MONITOR_MAX_UPSTREAM_BUFFER_BYTES)`);
+console.log(
+  `Upstream WS: hard cap=${MAX_UPSTREAM_BUFFER_BYTES}B soft1=${UPSTREAM_SOFT1_BYTES}B (~50% frames) soft2=${UPSTREAM_SOFT2_BYTES}B (~33%) audio pause>${UPSTREAM_AUDIO_PAUSE_BYTES}B`,
+);
 if (AUDIO_ENABLED) {
   console.log(`Audio: ${AUDIO_CHANNELS}ch @ ${AUDIO_SAMPLE_RATE}Hz PCM (trying ${audioDeviceCandidates.length} ALSA devices)`);
   console.log(`  first: ${audioDeviceCandidates.slice(0, 6).join(", ")}${audioDeviceCandidates.length > 6 ? "…" : ""}`);
