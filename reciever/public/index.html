@@ -160,6 +160,71 @@
     .camera-pane.no-video-feed .camera-fullscreen-btn {
       display: none;
     }
+    .camera-pane.mobile-chrome-hidden .camera-fullscreen-btn,
+    .camera-pane.mobile-chrome-hidden .camera-hud {
+      display: none;
+    }
+    @media (hover: none) and (pointer: coarse) {
+      .camera-pane {
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+    }
+    .touch-feed-hint {
+      position: absolute;
+      inset: 0;
+      z-index: 7;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.52);
+      pointer-events: auto;
+      opacity: 1;
+      transition: opacity 320ms ease-out;
+    }
+    .touch-feed-hint.touch-feed-hint--hiding {
+      opacity: 0;
+    }
+    .touch-feed-hint[hidden] {
+      display: none !important;
+    }
+    .touch-feed-hint__inner {
+      max-width: 22rem;
+      width: 100%;
+      border: 2px solid var(--border);
+      background: rgba(255, 255, 255, 0.94);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .touch-feed-hint__title {
+      margin: 0;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--fg);
+    }
+    .touch-feed-hint__lines {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 500;
+      color: #111;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .touch-feed-hint__dismiss {
+      align-self: flex-start;
+      margin-top: 2px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .touch-feed-hint { transition: none; }
+    }
     .camera-pane.is-pseudo-fullscreen {
       position: fixed;
       inset: 0;
@@ -553,6 +618,15 @@
           </div>
         </div>
         <div id="cameraBrb" class="brb">BRB<small>Camera reconnecting…</small></div>
+        <div id="touchFeedHint" class="touch-feed-hint" hidden aria-hidden="true">
+          <div class="touch-feed-hint__inner" role="dialog" aria-labelledby="touchFeedHintTitle" aria-modal="true">
+            <p id="touchFeedHintTitle" class="touch-feed-hint__title">Touch controls</p>
+            <p class="touch-feed-hint__lines">
+              Swipe on the video to pan and tilt the camera. Longer swipes move farther. Tap the video (not the buttons) to show or hide volume and fullscreen.
+            </p>
+            <button type="button" class="btn touch-feed-hint__dismiss">Got it</button>
+          </div>
+        </div>
       </div>
 
       <div class="controls">
@@ -601,6 +675,7 @@
     const presetButtons = document.querySelectorAll(".preset");
     const volumeInput = document.getElementById("volume");
     const volumeValue = document.getElementById("volumeValue");
+    const touchFeedHint = document.getElementById("touchFeedHint");
     let audioCtx = null;
     let gainNode = null;
     let audioWs = null;
@@ -924,7 +999,10 @@
         lockStatus.textContent = `Locked (${Math.ceil(l.remainingMs / 1000)}s)`;
         setControlsEnabled(false);
       }
-      controlHint.textContent = `Pan ${panPos} · Tilt ${tiltPos} · Arrow keys`;
+      const touchUi = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+      controlHint.textContent = touchUi
+        ? `Pan ${panPos} · Tilt ${tiltPos} · Swipe feed or keys`
+        : `Pan ${panPos} · Tilt ${tiltPos} · Arrow keys`;
     }
 
     async function sendServo(pan, tilt) {
@@ -965,6 +1043,241 @@
       });
     });
     if (cameraFullscreenBtn) cameraFullscreenBtn.addEventListener("click", toggleCameraFullscreen);
+
+    function isCoarseTouchPrimaryUi() {
+      return window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+    }
+    function syncMobileCameraChromeViewport() {
+      if (!isCoarseTouchPrimaryUi()) cameraPane.classList.remove("mobile-chrome-hidden");
+    }
+
+    const CAMERA_SWIPE_MIN_PX = 40;
+    const CAMERA_SWIPE_STEP_PX = 48;
+    /** Vertical swipes apply this factor vs horizontal (inverted in code below). */
+    const CAMERA_SWIPE_TILT_STRENGTH = 3;
+    let cameraTouchStart = null;
+    let lastCameraSwipeAt = 0;
+
+    if (cameraPane) {
+      cameraPane.addEventListener(
+        "touchstart",
+        (e) => {
+          if (!isCoarseTouchPrimaryUi()) return;
+          if (document.body.classList.contains("stream-ended")) return;
+          if (cameraPane.classList.contains("no-video-feed")) return;
+          if (cameraPane.classList.contains("loading-mode")) return;
+          if (e.target.closest(".camera-fullscreen-btn") || e.target.closest(".camera-hud") || e.target.closest(".brb")) return;
+          const t = e.targetTouches[0] ?? e.touches[0];
+          if (!t) return;
+          cameraTouchStart = { x: t.clientX, y: t.clientY, id: t.identifier };
+        },
+        { passive: true },
+      );
+      cameraPane.addEventListener(
+        "touchend",
+        (e) => {
+          if (!cameraTouchStart) return;
+          if (!isCoarseTouchPrimaryUi()) {
+            cameraTouchStart = null;
+            return;
+          }
+          const t = Array.from(e.changedTouches).find((x) => x.identifier === cameraTouchStart.id);
+          if (!t) {
+            cameraTouchStart = null;
+            return;
+          }
+          const dx = t.clientX - cameraTouchStart.x;
+          const dy = t.clientY - cameraTouchStart.y;
+          const dist = Math.hypot(dx, dy);
+          cameraTouchStart = null;
+          if (dist < CAMERA_SWIPE_MIN_PX) return;
+
+          if (document.body.classList.contains("stream-ended")) return;
+          if (cameraPane.classList.contains("no-video-feed")) return;
+
+          const l = lockInfo(lastGpsPayload);
+          if (!l.free && !l.mine) return;
+
+          const ax = Math.abs(dx);
+          const ay = Math.abs(dy);
+          const mult = Math.min(8, Math.max(1, Math.floor(Math.max(ax, ay) / CAMERA_SWIPE_STEP_PX)));
+          let dPan = 0;
+          let dTilt = 0;
+          if (ax >= ay) {
+            dPan = (dx > 0 ? -1 : 1) * STEP * mult;
+          } else {
+            dTilt = (dy > 0 ? -1 : 1) * STEP * mult * CAMERA_SWIPE_TILT_STRENGTH;
+          }
+
+          tryStartAudio();
+          tryMove(panPos + dPan, tiltPos + dTilt);
+          lastCameraSwipeAt = Date.now();
+          e.preventDefault();
+        },
+        { passive: false },
+      );
+      cameraPane.addEventListener("touchcancel", () => {
+        cameraTouchStart = null;
+      });
+
+      cameraPane.addEventListener("click", (e) => {
+        if (!isCoarseTouchPrimaryUi()) return;
+        if (Date.now() - lastCameraSwipeAt < 450) return;
+        if (document.body.classList.contains("stream-ended")) return;
+        if (cameraPane.classList.contains("no-video-feed")) return;
+        if (cameraPane.classList.contains("loading-mode")) return;
+        if (e.target.closest(".touch-feed-hint")) return;
+        if (e.target.closest(".camera-fullscreen-btn") || e.target.closest(".camera-hud") || e.target.closest(".brb")) return;
+        cameraPane.classList.toggle("mobile-chrome-hidden");
+      });
+    }
+
+    const TOUCH_FEED_HINT_KEY = "monitor_touch_feed_hint_v1";
+    const TOUCH_FEED_HINT_AUTO_MS = 10000;
+    const TOUCH_FEED_HINT_FADE_MS = 320;
+    let touchFeedHintAutoHideTimer = null;
+    let touchFeedHintFadeFallbackTimer = null;
+    /** @type {((ev: TransitionEvent) => void) | null} */
+    let touchFeedHintOnFadeEnd = null;
+
+    function clearTouchFeedHintAutoHideTimer() {
+      if (touchFeedHintAutoHideTimer != null) {
+        clearTimeout(touchFeedHintAutoHideTimer);
+        touchFeedHintAutoHideTimer = null;
+      }
+    }
+
+    function cancelTouchFeedHintFade() {
+      if (touchFeedHintFadeFallbackTimer != null) {
+        clearTimeout(touchFeedHintFadeFallbackTimer);
+        touchFeedHintFadeFallbackTimer = null;
+      }
+      if (touchFeedHint && touchFeedHintOnFadeEnd) {
+        touchFeedHint.removeEventListener("transitionend", touchFeedHintOnFadeEnd);
+        touchFeedHintOnFadeEnd = null;
+      }
+    }
+
+    function completeTouchFeedHintDismiss() {
+      cancelTouchFeedHintFade();
+      if (!touchFeedHint) return;
+      touchFeedHint.classList.remove("touch-feed-hint--hiding");
+      touchFeedHint.hidden = true;
+      touchFeedHint.setAttribute("aria-hidden", "true");
+      try {
+        localStorage.setItem(TOUCH_FEED_HINT_KEY, "1");
+      } catch (_) {}
+    }
+
+    function dismissTouchFeedHint() {
+      clearTouchFeedHintAutoHideTimer();
+      if (!touchFeedHint || touchFeedHint.hidden) return;
+      if (touchFeedHint.classList.contains("touch-feed-hint--hiding")) return;
+
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduceMotion) {
+        completeTouchFeedHintDismiss();
+        return;
+      }
+
+      cancelTouchFeedHintFade();
+      touchFeedHintOnFadeEnd = (ev) => {
+        if (ev.target !== touchFeedHint || ev.propertyName !== "opacity") return;
+        touchFeedHint.removeEventListener("transitionend", touchFeedHintOnFadeEnd);
+        touchFeedHintOnFadeEnd = null;
+        if (touchFeedHintFadeFallbackTimer != null) {
+          clearTimeout(touchFeedHintFadeFallbackTimer);
+          touchFeedHintFadeFallbackTimer = null;
+        }
+        completeTouchFeedHintDismiss();
+      };
+      touchFeedHint.addEventListener("transitionend", touchFeedHintOnFadeEnd);
+      touchFeedHint.classList.add("touch-feed-hint--hiding");
+      touchFeedHintFadeFallbackTimer = setTimeout(() => {
+        touchFeedHintFadeFallbackTimer = null;
+        if (touchFeedHint && touchFeedHintOnFadeEnd) {
+          touchFeedHint.removeEventListener("transitionend", touchFeedHintOnFadeEnd);
+          touchFeedHintOnFadeEnd = null;
+        }
+        completeTouchFeedHintDismiss();
+      }, TOUCH_FEED_HINT_FADE_MS + 80);
+    }
+
+    function syncTouchFeedHint() {
+      if (!touchFeedHint || !isCoarseTouchPrimaryUi()) {
+        clearTouchFeedHintAutoHideTimer();
+        cancelTouchFeedHintFade();
+        if (touchFeedHint) {
+          touchFeedHint.classList.remove("touch-feed-hint--hiding");
+          touchFeedHint.hidden = true;
+          touchFeedHint.setAttribute("aria-hidden", "true");
+        }
+        return;
+      }
+      try {
+        if (localStorage.getItem(TOUCH_FEED_HINT_KEY) === "1") {
+          clearTouchFeedHintAutoHideTimer();
+          cancelTouchFeedHintFade();
+          touchFeedHint.classList.remove("touch-feed-hint--hiding");
+          touchFeedHint.hidden = true;
+          touchFeedHint.setAttribute("aria-hidden", "true");
+          return;
+        }
+      } catch (_) {}
+      const show =
+        streamIsActive &&
+        !document.body.classList.contains("stream-ended") &&
+        !cameraPane.classList.contains("no-video-feed") &&
+        !cameraPane.classList.contains("loading-mode");
+      const wasHidden = touchFeedHint.hidden;
+
+      if (!show) {
+        clearTouchFeedHintAutoHideTimer();
+        cancelTouchFeedHintFade();
+        touchFeedHint.classList.remove("touch-feed-hint--hiding");
+        touchFeedHint.hidden = true;
+        touchFeedHint.setAttribute("aria-hidden", "true");
+        return;
+      }
+
+      touchFeedHint.hidden = false;
+      touchFeedHint.classList.remove("touch-feed-hint--hiding");
+      touchFeedHint.setAttribute("aria-hidden", "false");
+
+      if (wasHidden) {
+        clearTouchFeedHintAutoHideTimer();
+        touchFeedHintAutoHideTimer = setTimeout(() => {
+          touchFeedHintAutoHideTimer = null;
+          dismissTouchFeedHint();
+        }, TOUCH_FEED_HINT_AUTO_MS);
+        requestAnimationFrame(() => {
+          try {
+            touchFeedHint.querySelector(".touch-feed-hint__dismiss")?.focus({ preventScroll: true });
+          } catch (_) {}
+        });
+      }
+    }
+
+    if (touchFeedHint) {
+      const shieldTouchFromCamera = (ev) => {
+        if (touchFeedHint.hidden) return;
+        ev.stopPropagation();
+      };
+      touchFeedHint.addEventListener("touchstart", shieldTouchFromCamera, { capture: true });
+      touchFeedHint.addEventListener("touchmove", shieldTouchFromCamera, { capture: true });
+      touchFeedHint.addEventListener("touchend", shieldTouchFromCamera, { capture: true });
+      touchFeedHint.addEventListener("click", (e) => {
+        if (touchFeedHint.hidden) return;
+        e.stopPropagation();
+        dismissTouchFeedHint();
+      });
+    }
+
+    window.addEventListener("resize", () => {
+      syncMobileCameraChromeViewport();
+      syncTouchFeedHint();
+    });
+
     function onFullscreenLayoutEvent() {
       renderFullscreenBtn();
       updateStageLayout();
@@ -975,6 +1288,10 @@
     renderFullscreenBtn();
 
     window.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && touchFeedHint && !touchFeedHint.hidden) {
+        dismissTouchFeedHint();
+        return;
+      }
       if (ev.key === "Escape" && pseudoCameraFullscreen) {
         pseudoCameraFullscreen = false;
         cameraPane.classList.remove("is-pseudo-fullscreen");
@@ -1128,6 +1445,7 @@
       setBrb(gpsBrb, gpsStale);
       renderLock(data);
       finishStreamBoot();
+      syncTouchFeedHint();
       if (!data || !data.ok || data.lat == null || data.lon == null) {
         updateMapToolButtons();
         return;
