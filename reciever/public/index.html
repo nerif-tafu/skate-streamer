@@ -278,7 +278,7 @@
       display: grid;
       grid-template-rows: auto 1fr;
     }
-    .map-pane .label {
+    .map-pane .label.map-pane__toggle {
       border-bottom: 2px solid var(--border);
       background: var(--muted);
       padding: 6px 8px;
@@ -286,6 +286,43 @@
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.14em;
+      width: 100%;
+      margin: 0;
+      box-sizing: border-box;
+      font-family: inherit;
+      color: var(--fg);
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 40px;
+      -webkit-appearance: none;
+      appearance: none;
+      transition: background-color 180ms ease-out, color 180ms ease-out;
+    }
+    .map-pane .label.map-pane__toggle:hover {
+      background: var(--fg);
+      color: var(--bg);
+    }
+    .map-pane .label.map-pane__toggle:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      z-index: 2;
+    }
+    .map-pane__chev::before {
+      content: "▼";
+      display: inline-block;
+      font-size: 9px;
+      line-height: 1;
+      transition: transform 180ms ease-out;
+    }
+    .map-pane.map-collapsed .map-pane__chev::before {
+      transform: rotate(-90deg);
+    }
+    @media (min-width: 641px) {
+      .map-pane__chev { display: none; }
     }
     #map { min-height: 0; width: 100%; background: var(--muted); }
     .map-tools-wrap {
@@ -544,6 +581,9 @@
           "cam"
           "ctl";
       }
+      .stage.map-stack-collapsed {
+        grid-template-rows: minmax(0, 1.25fr) auto auto;
+      }
       header { align-items: flex-start; }
       header h1 { font-size: clamp(18px, 7vw, 28px); }
       #servoStatus { max-width: 100%; width: 100%; text-align: left; }
@@ -582,10 +622,28 @@
       }
       .controls .row { padding: 6px; }
       .btn { padding: 8px 10px; min-height: 44px; flex: 1 1 calc(50% - 6px); }
+      .map-pane.map-collapsed {
+        grid-template-rows: auto 0fr;
+      }
+      .map-pane.map-collapsed #map {
+        min-height: 0 !important;
+        max-height: 0;
+        overflow: hidden;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .map-pane.map-collapsed .brb {
+        display: none !important;
+      }
+      .map-pane .label.map-pane__toggle {
+        min-height: 44px;
+      }
     }
     @media (prefers-reduced-motion: reduce) {
       .btn, .stream, .ended-panel { transition: none; }
       .ended-wheel { animation: none; }
+      .map-pane .label.map-pane__toggle,
+      .map-pane__chev::before { transition: none; }
     }
     /* Until first GPS snapshot, hide stream UI to avoid live → offline flash */
     body.stream-boot .stage,
@@ -643,7 +701,10 @@
       </div>
 
       <div class="map-pane">
-        <div class="label">GPS</div>
+        <button type="button" class="label map-pane__toggle" id="mapPaneToggle" aria-expanded="true" aria-controls="map" aria-label="Show or hide GPS map">
+          <span class="map-pane__toggle-text">GPS</span>
+          <span class="map-pane__chev" aria-hidden="true"></span>
+        </button>
         <div id="map" role="application" aria-label="Map"></div>
         <div id="gpsBrb" class="brb">BRB<small>GPS signal missing</small></div>
       </div>
@@ -668,6 +729,7 @@
     const stageEl = document.querySelector(".stage");
     const cameraPane = document.querySelector(".camera-pane");
     const mapPane = document.querySelector(".map-pane");
+    const mapPaneToggle = document.getElementById("mapPaneToggle");
     const headerEl = document.querySelector("header");
     const cameraFullscreenBtn = document.getElementById("cameraFullscreenBtn");
     const lockStatus = document.getElementById("lockStatus");
@@ -806,10 +868,63 @@
       mapPane.classList.toggle("pane-switching-hidden", !!hidden);
     }
 
+    const MAP_DRAWER_SESSION_KEY = "skate_map_drawer_expanded";
+
+    function isStreamLayoutNarrow() {
+      return window.matchMedia("(max-width: 640px)").matches;
+    }
+
+    function scheduleMapInvalidateSafe() {
+      requestAnimationFrame(() => {
+        try {
+          if (typeof invalidateMapSize === "function") invalidateMapSize();
+        } catch (_) {}
+      });
+    }
+
+    function syncNarrowMapDrawer() {
+      if (!mapPane || !mapPaneToggle) return;
+      const narrow = isStreamLayoutNarrow();
+      const offline = stageEl?.classList.contains("encoder-offline");
+      if (!narrow || offline) {
+        mapPane.classList.remove("map-collapsed");
+        stageEl?.classList.remove("map-stack-collapsed");
+        mapPaneToggle.setAttribute("aria-expanded", "true");
+        scheduleMapInvalidateSafe();
+        return;
+      }
+      let expanded = false;
+      try {
+        expanded = sessionStorage.getItem(MAP_DRAWER_SESSION_KEY) === "1";
+      } catch (_) {}
+      const collapsed = !expanded;
+      mapPane.classList.toggle("map-collapsed", collapsed);
+      stageEl?.classList.toggle("map-stack-collapsed", collapsed);
+      mapPaneToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      if (expanded) scheduleMapInvalidateSafe();
+    }
+
+    if (mapPaneToggle) {
+      mapPaneToggle.addEventListener("click", () => {
+        if (!isStreamLayoutNarrow()) return;
+        if (stageEl?.classList.contains("encoder-offline")) return;
+        mapPane.classList.toggle("map-collapsed");
+        const collapsed = mapPane.classList.contains("map-collapsed");
+        try {
+          if (collapsed) sessionStorage.removeItem(MAP_DRAWER_SESSION_KEY);
+          else sessionStorage.setItem(MAP_DRAWER_SESSION_KEY, "1");
+        } catch (_) {}
+        mapPaneToggle.setAttribute("aria-expanded", (!collapsed).toString());
+        stageEl?.classList.toggle("map-stack-collapsed", collapsed);
+        scheduleMapInvalidateSafe();
+      });
+    }
+
     function applyEncoderPaneState(encoderConnected) {
       stageEl.classList.toggle("encoder-offline", !encoderConnected);
       mapPane.classList.toggle("pane-offline-hidden", !encoderConnected);
       updateStageLayout();
+      syncNarrowMapDrawer();
     }
 
     function animateFeedSwap(nextEncoderConnected) {
@@ -1276,6 +1391,7 @@
     window.addEventListener("resize", () => {
       syncMobileCameraChromeViewport();
       syncTouchFeedHint();
+      syncNarrowMapDrawer();
     });
 
     function onFullscreenLayoutEvent() {
@@ -1327,6 +1443,7 @@
       setVolume(volumeInput.value);
       tryStartAudio();
     });
+    syncNarrowMapDrawer();
   </script>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -1446,6 +1563,7 @@
       renderLock(data);
       finishStreamBoot();
       syncTouchFeedHint();
+      syncNarrowMapDrawer();
       if (!data || !data.ok || data.lat == null || data.lon == null) {
         updateMapToolButtons();
         return;
@@ -1505,6 +1623,7 @@
       updateStageLayout();
       invalidateMapSize();
       updateEndedPanelOffset();
+      if (typeof syncNarrowMapDrawer === "function") syncNarrowMapDrawer();
     });
     streamImg.addEventListener("load", () => {
       const nw = Number(streamImg.naturalWidth);
