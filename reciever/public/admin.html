@@ -488,8 +488,28 @@
       return `${h}h ${m}m ${ss}s`;
     }
 
+    // Builds a <tr> as DOM nodes. Values such as recording names and NMEA
+    // fields are supplied by users or the encoder, so they are assigned with
+    // textContent and never parsed as markup. Pass a Node (or array of them)
+    // when deliberate markup is wanted, e.g. the coloured status pills.
     function row(name, value) {
-      return `<tr><td>${name}</td><td>${value}</td></tr>`;
+      const tr = document.createElement("tr");
+      const tdName = document.createElement("td");
+      tdName.textContent = name;
+      const tdValue = document.createElement("td");
+      if (Array.isArray(value)) tdValue.append(...value);
+      else if (value instanceof Node) tdValue.append(value);
+      else tdValue.textContent = value == null ? "" : String(value);
+      tr.append(tdName, tdValue);
+      return tr;
+    }
+
+    /** Coloured status pill, e.g. <span class="ok">Connected</span>. */
+    function statusPill(text, good) {
+      const span = document.createElement("span");
+      span.className = good ? "ok" : "bad";
+      span.textContent = text;
+      return span;
     }
 
     function fillServoForm(c) {
@@ -603,17 +623,19 @@
       toggleStreamBtn.textContent = s.streamActive ? "End Live Stream" : "Start Live Stream";
       toggleStreamBtn.classList.toggle("start", s.streamActive);
       toggleStreamBtn.classList.toggle("end", !s.streamActive);
-      statsBody.innerHTML = [
+      statsBody.replaceChildren(
         row("Uptime", fmtMs(s.uptimeMs)),
-        row("Encoder", s.encoderConnected ? '<span class="ok">Connected</span>' : '<span class="bad">Disconnected</span>'),
-        row("Recording", s.recordingActive ? `<span class="ok">Active</span> ${s.recordingName ?? ""}` : '<span class="bad">Idle</span>'),
+        row("Encoder", statusPill(s.encoderConnected ? "Connected" : "Disconnected", s.encoderConnected)),
+        row("Recording", s.recordingActive
+          ? [statusPill("Active", true), ` ${s.recordingName ?? ""}`]
+          : statusPill("Idle", false)),
         row("Recordings total", s.recordingsCount ?? 0),
         row("Video subscribers", s.videoSubscribers),
         row("Approx FPS", s.fpsApprox),
         row("Frames received", s.framesReceived),
         row("GPS updates", s.gpsUpdates),
-        row("GPS fresh", s.gpsFresh ? '<span class="ok">Yes</span>' : '<span class="bad">No</span>'),
-        row("Camera fresh", s.cameraFresh ? '<span class="ok">Yes</span>' : '<span class="bad">No</span>'),
+        row("GPS fresh", statusPill(s.gpsFresh ? "Yes" : "No", s.gpsFresh)),
+        row("Camera fresh", statusPill(s.cameraFresh ? "Yes" : "No", s.cameraFresh)),
         row("Servo requests", s.servoRequests),
         row("Servo ACK ok", s.servoAcksOk),
         row("Servo ACK errors", s.servoAcksErr),
@@ -621,9 +643,9 @@
         row("Encoder disconnects", s.encoderDisconnects),
         row("Last frame age", s.frameAgeMs == null ? "n/a" : `${s.frameAgeMs} ms`),
         row("Last GPS age", s.gpsAgeMs == null ? "n/a" : `${s.gpsAgeMs} ms`),
-      ].join("");
+      );
 
-      gpsBody.innerHTML = [
+      gpsBody.replaceChildren(
         row("Fix mode", fixLabel(s.fix)),
         row("GPS source UTC", s.utc || "n/a"),
         row("Lat / Lon (decimal)", s.lat != null && s.lon != null ? `${Number(s.lat).toFixed(7)}, ${Number(s.lon).toFixed(7)}` : "n/a"),
@@ -646,7 +668,7 @@
         row("NMEA UTC time", s.time || "n/a"),
         row("NMEA UTC date", s.date || "n/a"),
         row("Updated at", s.updatedAt ? new Date(s.updatedAt).toISOString() : "n/a"),
-      ].join("");
+      );
     }
 
     function wireRecordingButtons() {
@@ -688,24 +710,61 @@
         recordingsBody.innerHTML = '<tr><td colspan="3">No recordings yet.</td></tr>';
         return;
       }
-      recordingsBody.innerHTML = videos.map((v) => `
-              <tr>
-                <td>
-                  <div class="recording-main">
-                    <video class="recording-thumb" muted preload="metadata" src="${v.url}"></video>
-                    <a class="recording-title" href="${v.url}" target="_blank" rel="noopener">${v.name}</a>
-                  </div>
-                </td>
-                <td class="recording-size">${fmtBytes(Number(v.sizeBytes))}</td>
-                <td class="recording-actions">
-                  <div class="recording-actions-inner">
-                    <a href="${v.url}" download="${v.name}" class="action-link start">Download</a>
-                    <button type="button" class="start rename-video" data-name="${v.name}">Rename</button>
-                    <button type="button" class="end delete-video" data-name="${v.name}">Delete</button>
-                  </div>
-                </td>
-              </tr>
-            `).join("");
+      // Recording names are chosen by the user via the rename prompt, so the
+      // whole row is built as DOM nodes; setAttribute/textContent keep the name
+      // as data instead of markup.
+      recordingsBody.replaceChildren(...videos.map((v) => {
+        const thumb = document.createElement("video");
+        thumb.className = "recording-thumb";
+        thumb.muted = true;
+        thumb.preload = "metadata";
+        thumb.src = v.url;
+
+        const title = document.createElement("a");
+        title.className = "recording-title";
+        title.href = v.url;
+        title.target = "_blank";
+        title.rel = "noopener";
+        title.textContent = v.name;
+
+        const main = document.createElement("div");
+        main.className = "recording-main";
+        main.append(thumb, title);
+
+        const tdMain = document.createElement("td");
+        tdMain.append(main);
+
+        const tdSize = document.createElement("td");
+        tdSize.className = "recording-size";
+        tdSize.textContent = fmtBytes(Number(v.sizeBytes));
+
+        const download = document.createElement("a");
+        download.href = v.url;
+        download.setAttribute("download", v.name);
+        download.className = "action-link start";
+        download.textContent = "Download";
+
+        const mkButton = (cls, label) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = cls;
+          b.setAttribute("data-name", v.name);
+          b.textContent = label;
+          return b;
+        };
+
+        const actionsInner = document.createElement("div");
+        actionsInner.className = "recording-actions-inner";
+        actionsInner.append(download, mkButton("start rename-video", "Rename"), mkButton("end delete-video", "Delete"));
+
+        const tdActions = document.createElement("td");
+        tdActions.className = "recording-actions";
+        tdActions.append(actionsInner);
+
+        const tr = document.createElement("tr");
+        tr.append(tdMain, tdSize, tdActions);
+        return tr;
+      }));
       wireRecordingButtons();
     }
 
