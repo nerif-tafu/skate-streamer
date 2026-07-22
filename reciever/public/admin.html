@@ -714,15 +714,20 @@
       // whole row is built as DOM nodes; setAttribute/textContent keep the name
       // as data instead of markup.
       recordingsBody.replaceChildren(...videos.map((v) => {
+        // Build the URL from the name rather than trusting v.url, so only a
+        // same-origin /recordings/ path can ever reach src/href. This matches
+        // exactly what the server emits and rules out javascript:/data: URLs.
+        const url = "/recordings/" + encodeURIComponent(v.name);
+
         const thumb = document.createElement("video");
         thumb.className = "recording-thumb";
         thumb.muted = true;
         thumb.preload = "metadata";
-        thumb.src = v.url;
+        thumb.src = url;
 
         const title = document.createElement("a");
         title.className = "recording-title";
-        title.href = v.url;
+        title.href = url;
         title.target = "_blank";
         title.rel = "noopener";
         title.textContent = v.name;
@@ -739,7 +744,7 @@
         tdSize.textContent = fmtBytes(Number(v.sizeBytes));
 
         const download = document.createElement("a");
-        download.href = v.url;
+        download.href = url;
         download.setAttribute("download", v.name);
         download.className = "action-link start";
         download.textContent = "Download";
