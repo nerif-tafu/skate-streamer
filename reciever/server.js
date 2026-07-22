@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { WebSocketServer, WebSocket } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -497,6 +498,40 @@ function broadcastAudioChunk(wssAudio, audioChunk) {
 }
 
 const app = express();
+
+// This instance is internet-facing, so every route gets a baseline limit.
+//
+// TRUST_PROXY must be set when running behind a reverse proxy or CDN, otherwise
+// every client is seen as the proxy's IP and shares one bucket. Leave it unset
+// when the container is exposed directly: trusting X-Forwarded-For without a
+// proxy in front lets a caller spoof their address and bypass the limits.
+if (process.env.TRUST_PROXY) {
+  const value = Number(process.env.TRUST_PROXY);
+  app.set("trust proxy", Number.isNaN(value) ? process.env.TRUST_PROXY : value);
+}
+
+const limiterDefaults = {
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many requests, please slow down." },
+};
+
+// Generous baseline: a viewer loading the page pulls several static assets and
+// reconnects the MJPEG feed on stalls, so this needs headroom.
+const generalLimiter = rateLimit({ ...limiterDefaults, windowMs: 60_000, max: 600 });
+
+// Pan/tilt is driven by key-repeat and swipe gestures, which burst well above
+// the baseline. The existing control lock is the real contention guard here;
+// this only stops a single IP hammering the endpoint.
+const servoLimiter = rateLimit({ ...limiterDefaults, windowMs: 60_000, max: 1200 });
+
+// Sign-in is cheap to brute force and rare in normal use.
+const authLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60_000, max: 20 });
+
+// Renaming and deleting recordings touches the filesystem.
+const mutationLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60_000, max: 100 });
+
+app.use(generalLimiter);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/recordings", express.static(RECORDINGS_DIR));
@@ -531,7 +566,7 @@ app.get("/api/videos", (_req, res) => {
   res.json({ ok: true, items: listRecordings() });
 });
 
-app.post("/api/videos/:name/rename", (req, res) => {
+app.post("/api/videos/:name/rename", mutationLimiter, (req, res) => {
   if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   const oldName = normalizeVideoName(req.params?.name);
   const nextName = normalizeVideoName(req.body?.newName);
@@ -563,7 +598,7 @@ app.post("/api/videos/:name/rename", (req, res) => {
   }
 });
 
-app.delete("/api/videos/:name", (req, res) => {
+app.delete("/api/videos/:name", mutationLimiter, (req, res) => {
   if (!isAdminSessionValid(req)) return res.status(401).json({ ok: false, error: "admin auth required" });
   const name = normalizeVideoName(req.params?.name);
   if (!name) {
@@ -695,7 +730,7 @@ app.post("/api/admin/stream", (req, res) => {
   return res.json({ ok: true, streamActive });
 });
 
-app.post("/api/admin/auth/google", async (req, res) => {
+app.post("/api/admin/auth/google", authLimiter, async (req, res) => {
   const idToken = String(req.body?.idToken ?? "").trim();
   if (!idToken) return res.status(400).json({ ok: false, error: "idToken required" });
   try {
@@ -719,7 +754,7 @@ app.post("/api/admin/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/servo", async (req, res) => {
+app.post("/api/servo", servoLimiter, async (req, res) => {
   stats.servoRequests += 1;
   const clientId = String(req.body?.clientId ?? "").trim();
   if (!clientId) return res.status(400).json({ ok: false, error: "clientId required" });
