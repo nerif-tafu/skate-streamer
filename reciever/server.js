@@ -82,6 +82,46 @@ const stats = {
   encoderConnects: 0,
   encoderDisconnects: 0,
 };
+
+const CHAT_HISTORY_MAX = 120;
+const CHAT_MAX_MESSAGE_CHARS = 400;
+const CHAT_MAX_NICK_CHARS = 24;
+const CHAT_MIN_SEND_GAP_MS = Math.max(400, Number(process.env.MONITOR_CHAT_MIN_SEND_GAP_MS ?? "900"));
+const chatHistory = [];
+
+function sanitizeChatNick(raw) {
+  const s = String(raw ?? "")
+    .trim()
+    .slice(0, CHAT_MAX_NICK_CHARS)
+    .replace(/[\u0000-\u001F\u007F]/g, "");
+  if (!s) return null;
+  return s;
+}
+
+function sanitizeChatText(raw) {
+  return String(raw ?? "")
+    .trim()
+    .slice(0, CHAT_MAX_MESSAGE_CHARS)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+}
+
+function pushChatEntry(entry) {
+  chatHistory.push(entry);
+  while (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
+}
+
+function broadcastChat(wssChat, obj) {
+  const payload = JSON.stringify(obj);
+  for (const client of wssChat.clients) {
+    if (client.readyState === 1) {
+      try {
+        client.send(payload);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
 const controlLock = {
   holder: null,
   expiresAt: 0,
@@ -802,6 +842,10 @@ const adminWss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
 });
+const chatWss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false,
+});
 
 adminWss.on("connection", (ws) => {
   const tick = setInterval(() => {
@@ -851,7 +895,62 @@ httpServer.on("upgrade", (req, socket, head) => {
     });
     return;
   }
+  if (pathOnly === "/ws/chat") {
+    chatWss.handleUpgrade(req, socket, head, (ws) => {
+      chatWss.emit("connection", ws, req);
+    });
+    return;
+  }
   socket.destroy();
+});
+
+chatWss.on("connection", (ws) => {
+  const suffix = crypto.randomBytes(2).toString("hex");
+  ws.chatDefaultNick = `Guest-${suffix}`;
+  ws.chatNick = ws.chatDefaultNick;
+  ws.chatLastSendAt = 0;
+  try {
+    ws.send(JSON.stringify({ type: "history", messages: chatHistory.slice() }));
+  } catch {
+    // ignore
+  }
+
+  ws.on("message", (raw) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg !== "object") return;
+    if (msg.type === "nick") {
+      const next = sanitizeChatNick(msg.nick);
+      ws.chatNick = next || ws.chatDefaultNick;
+      try {
+        ws.send(JSON.stringify({ type: "nickAck", nick: ws.chatNick }));
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    if (msg.type !== "message") return;
+    const text = sanitizeChatText(msg.text);
+    if (!text) return;
+    const now = Date.now();
+    if (now - ws.chatLastSendAt < CHAT_MIN_SEND_GAP_MS) return;
+    ws.chatLastSendAt = now;
+    const nickOverride = sanitizeChatNick(msg.nick);
+    const nick = nickOverride || ws.chatNick;
+    if (nickOverride) ws.chatNick = nickOverride;
+    const entry = {
+      id: crypto.randomUUID(),
+      ts: now,
+      nick,
+      text,
+    };
+    pushChatEntry(entry);
+    broadcastChat(chatWss, { type: "message", ...entry });
+  });
 });
 
 ingestWss.on("connection", (ws) => {
@@ -1041,6 +1140,16 @@ function shutdown() {
   }
   try {
     audioWss.close();
+  } catch {
+    // ignore
+  }
+  try {
+    adminWss.close();
+  } catch {
+    // ignore
+  }
+  try {
+    chatWss.close();
   } catch {
     // ignore
   }
